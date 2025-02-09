@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { db } from "./db/index.js";
-import { products, users, brands } from "./db/schema.js";
+import { products, users, brands, categories } from "./db/schema.js";
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -23,8 +23,6 @@ app.use(express.json());
 // );
 // app.use(passport.initialize());
 // app.use(passport.session());
-
-
 
 //-------------------------------------------------------USERS----------------------------------------------------------------------
 
@@ -142,7 +140,6 @@ app.post("/login", async (req, res) => {
   }
 });
 
-
 app.get("/protected", authenticate, async (req, res) => {
   try {
     // Дані користувача з token
@@ -152,6 +149,28 @@ app.get("/protected", authenticate, async (req, res) => {
     res.status(200).json({ userId, name, email });
   } catch (error) {
     console.error("Помилка отримання даних користувача:", error);
+    res.status(500).json({ error: "Виникла помилка на сервері" });
+  }
+});
+
+app.get("/getUserRole", authenticate, async (req, res) => {
+  try {
+    const { userId } = req.user;
+
+    const user = await db
+      .select({ roleId: users.roleId })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1)
+      .then((res) => res[0]);
+
+    if (!user) {
+      return res.status(404).json({ error: "Користувач не знайдений" });
+    }
+
+    res.json({ roleId: user.roleId });
+  } catch (error) {
+    console.error("Помилка отримання ролі користувача:", error);
     res.status(500).json({ error: "Виникла помилка на сервері" });
   }
 });
@@ -208,6 +227,48 @@ app.post("/products", async (req, res) => {
     res.status(500).json({ error: "Error adding product" });
   }
 });
+//-------------------------------------------------------CATEGORIES----------------------------------------------------------------------
+
+app.get("/categories", async (req, res) => {
+  try {
+    const allCategories = await db
+      .select({
+        categoryId: categories.categoryId,
+        name: categories.name,
+        imageUrl: categories.imageUrl,
+      })
+      .from(categories);
+
+    res.json(allCategories);
+  } catch (error) {
+    console.error("Error fetching categories:", error);
+    res.status(500).json({ error: "Failed to fetch categories" });
+  }
+});
+
+app.post("/categories", async (req, res) => {
+  try {
+    const { name, imageUrl } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: "Поле назви є обов'язкове" });
+    }
+
+    const [newCategory] = await db
+      .insert(categories)
+      .values({
+        name,
+        imageUrl,
+      })
+      .returning();
+
+    res.status(201).json(newCategory);
+  } catch (error) {
+    console.error("Error adding category:", error);
+    res.status(500).json({ error: "Error adding category" });
+  }
+});
+
 //------------------------------------------------------------------------------------------------------------------------------------
 
 // passport.use(

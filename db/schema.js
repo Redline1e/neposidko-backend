@@ -79,6 +79,7 @@ export const reviews = pgTable("reviews", {
 export const categories = pgTable("categories", {
   categoryId: serial("categoryId").primaryKey(),
   name: text("name"),
+  imageUrl: text("imageUrl"),
 });
 
 // ProductOrder table (змінив ім'я таблиці на `orderItems` для кращого розуміння)
@@ -96,6 +97,7 @@ export const orderItems = pgTable("orderItems", {
 // ProductCategories table
 export const productCategories = pgTable("productCategories", {
   productCategoryId: serial("productCategoryId").primaryKey(),
+  imageUrl: text("imageUrl"),
   productId: integer("productId").references(() => products.productId, {
     onDelete: "cascade",
   }),
