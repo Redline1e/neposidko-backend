@@ -2,7 +2,16 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { db } from "./db/index.js";
-import { products, users, brands, categories } from "./db/schema.js";
+import {
+  products,
+  users,
+  brands,
+  categories,
+  orders,
+  orderItems,
+  productSizes,
+} from "./db/schema.js";
+
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
@@ -142,10 +151,8 @@ app.post("/login", async (req, res) => {
 
 app.get("/protected", authenticate, async (req, res) => {
   try {
-    // Дані користувача з token
     const { userId, name, email } = req.user;
 
-    // Повертаємо інформацію про користувача
     res.status(200).json({ userId, name, email });
   } catch (error) {
     console.error("Помилка отримання даних користувача:", error);
@@ -177,49 +184,98 @@ app.get("/getUserRole", authenticate, async (req, res) => {
 
 //-------------------------------------------------------PRODUCTS----------------------------------------------------------------------
 
+// GET /products
 app.get("/products", async (req, res) => {
   try {
+    // Отримуємо основні дані продукту (articleNumber, name, price, discount, description, imageUrl, бренд)
     const allProducts = await db
       .select({
-        productId: products.productId,
+        articleNumber: products.articleNumber,
+        name: products.name, // нове поле
         price: products.price,
         discount: products.discount,
         description: products.description,
         imageUrl: products.imageUrl,
         brand: brands.name,
-        sizes: products.sizes,
       })
       .from(products)
       .leftJoin(brands, eq(products.brandId, brands.brandId));
 
-    res.json(allProducts);
+    // Для кожного продукту отримуємо доступні розміри з таблиці productSizes
+    const productsWithSizes = await Promise.all(
+      allProducts.map(async (prod) => {
+        const sizes = await db
+          .select({
+            size: productSizes.size,
+            stock: productSizes.stock,
+          })
+          .from(productSizes)
+          .where(eq(productSizes.articleNumber, prod.articleNumber));
+        return { ...prod, sizes };
+      })
+    );
+
+    res.json(productsWithSizes);
   } catch (error) {
     console.error("Error fetching products:", error);
     res.status(500).json({ error: "Failed to fetch products" });
   }
 });
 
+// POST /products
 app.post("/products", async (req, res) => {
   try {
-    const { brandId, price, discount, description, imageUrl, sizes } = req.body;
+    const {
+      articleNumber,
+      brandId,
+      price,
+      discount,
+      name, // нове поле
+      description,
+      imageUrl,
+      sizes,
+    } = req.body;
 
-    if (!brandId || !price || !description || !imageUrl) {
-      return res
-        .status(400)
-        .json({ error: "Всі поля, окрім знижки та розмірів, обов'язкові" });
+    // Перевірка обов’язкових полів (тепер включає name)
+    if (
+      !articleNumber ||
+      !brandId ||
+      !price ||
+      !name ||
+      !description ||
+      !imageUrl
+    ) {
+      return res.status(400).json({
+        error:
+          "Поля articleNumber, brandId, price, name, description та imageUrl є обов'язковими",
+      });
     }
 
     const [newProduct] = await db
       .insert(products)
       .values({
+        articleNumber,
         brandId,
         price,
         discount: discount || 0,
+        name, // вставляємо name
         description,
         imageUrl,
-        sizes: sizes || [],
       })
       .returning();
+
+    // Якщо передано розміри, додаємо їх у таблицю productSizes
+    if (sizes && Array.isArray(sizes)) {
+      for (const sizeObj of sizes) {
+        const { size, stock } = sizeObj;
+        if (!size || stock == null) continue;
+        await db.insert(productSizes).values({
+          articleNumber,
+          size,
+          stock,
+        });
+      }
+    }
 
     res.status(201).json(newProduct);
   } catch (error) {
@@ -227,6 +283,46 @@ app.post("/products", async (req, res) => {
     res.status(500).json({ error: "Error adding product" });
   }
 });
+
+// GET /products/:articleNumber
+app.get("/products/:articleNumber", async (req, res) => {
+  try {
+    const { articleNumber } = req.params;
+    const product = await db
+      .select({
+        articleNumber: products.articleNumber,
+        name: products.name, // додаємо поле name
+        price: products.price,
+        discount: products.discount,
+        description: products.description,
+        imageUrl: products.imageUrl,
+        brand: brands.name,
+      })
+      .from(products)
+      .leftJoin(brands, eq(products.brandId, brands.brandId))
+      .where(eq(products.articleNumber, articleNumber))
+      .limit(1)
+      .then((result) => result[0]);
+
+    if (!product) {
+      return res.status(404).json({ error: "Продукт не знайдено" });
+    }
+
+    const sizes = await db
+      .select({
+        size: productSizes.size,
+        stock: productSizes.stock,
+      })
+      .from(productSizes)
+      .where(eq(productSizes.articleNumber, articleNumber));
+
+    res.json({ ...product, sizes });
+  } catch (error) {
+    console.error("Error fetching product by articleNumber:", error);
+    res.status(500).json({ error: "Не вдалося отримати дані продукту" });
+  }
+});
+
 //-------------------------------------------------------CATEGORIES----------------------------------------------------------------------
 
 app.get("/categories", async (req, res) => {
@@ -266,6 +362,177 @@ app.post("/categories", async (req, res) => {
   } catch (error) {
     console.error("Error adding category:", error);
     res.status(500).json({ error: "Error adding category" });
+  }
+});
+//-------------------------------------------------------BRANDS--------------------------------------------------------------------------
+
+app.get("/brands", async (req, res) => {
+  try {
+    const allBrands = await db
+      .select({
+        brandId: brands.brandId,
+        name: brands.name,
+      })
+      .from(brands);
+
+    res.json(allBrands);
+  } catch (error) {
+    console.error("Error fetching brands:", error);
+    res.status(500).json({ error: "Failed to fetch brands" });
+  }
+});
+
+app.post("/brands", async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: "Поле назви є обов'язкове" });
+    }
+
+    const [newBrand] = await db
+      .insert(brands)
+      .values({
+        name,
+      })
+      .returning();
+
+    res.status(201).json(newBrand);
+  } catch (error) {
+    console.error("Error adding brand:", error);
+    res.status(500).json({ error: "Error adding brand" });
+  }
+});
+
+//-------------------------------------------------------ORDERS--------------------------------------------------------------------------
+app.get("/orders", async (req, res) => {
+  try {
+    const allOrders = await db
+      .select({
+        orderId: orders.orderId,
+        userId: orders.userId,
+        orderStatusId: orders.orderStatusId,
+        cartData: orders.cartData,
+      })
+      .from(orders);
+
+    res.json(allOrders);
+  } catch (error) {
+    console.error("Error fetching orders:", error);
+    res.status(500).json({ error: "Failed to fetch orders" });
+  }
+});
+
+app.post("/orders", async (req, res) => {
+  try {
+    const { userId, orderStatusId, cartData } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "Поле userId є обов'язкове" });
+    }
+
+    const [newOrder] = await db
+      .insert(orders)
+      .values({
+        userId,
+        orderStatusId,
+        cartData,
+      })
+      .returning();
+
+    res.status(201).json(newOrder);
+  } catch (error) {
+    console.error("Error adding order:", error);
+    res.status(500).json({ error: "Error adding order" });
+  }
+});
+
+//---------------------------------------------------ORDER-ITEMS--------------------------------------------------------------------
+// GET /order-items – отримання всіх елементів замовлення
+app.get("/order-items", async (req, res) => {
+  try {
+    const allOrderItems = await db
+      .select({
+        productOrderId: orderItems.productOrderId,
+        orderId: orderItems.orderId,
+        articleNumber: orderItems.articleNumber,
+        size: orderItems.size,
+        quantity: orderItems.quantity,
+      })
+      .from(orderItems);
+
+    res.json(allOrderItems);
+  } catch (error) {
+    console.error("Error fetching order items:", error);
+    res.status(500).json({ error: "Failed to fetch order items" });
+  }
+});
+
+app.post("/order-items", async (req, res) => {
+  try {
+    const { orderId, articleNumber, size, quantity } = req.body;
+
+    if (!orderId || !articleNumber || !size || !quantity) {
+      return res.status(400).json({
+        error: "Поля orderId, articleNumber, size та quantity є обов'язковими",
+      });
+    }
+
+    const [newOrderItem] = await db
+      .insert(orderItems)
+      .values({
+        orderId,
+        articleNumber,
+        size,
+        quantity,
+      })
+      .returning();
+
+    res.status(201).json(newOrderItem);
+  } catch (error) {
+    console.error("Error adding order item:", error);
+    res.status(500).json({ error: "Error adding order item" });
+  }
+});
+
+app.put("/order-items/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { size, quantity } = req.body;
+    if (!size || !quantity) {
+      return res
+        .status(400)
+        .json({ error: "Поля size та quantity є обов'язковими" });
+    }
+    const updatedOrderItems = await db
+      .update(orderItems)
+      .set({ size, quantity })
+      .where(eq(orderItems.productOrderId, Number(id)))
+      .returning();
+    if (updatedOrderItems.length === 0) {
+      return res.status(404).json({ error: "Позицію замовлення не знайдено" });
+    }
+    res.json(updatedOrderItems[0]);
+  } catch (error) {
+    console.error("Error updating order item:", error);
+    res.status(500).json({ error: "Error updating order item" });
+  }
+});
+
+app.delete("/order-items/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deletedItems = await db
+      .delete(orderItems)
+      .where(eq(orderItems.productOrderId, Number(id)))
+      .returning();
+    if (deletedItems.length === 0) {
+      return res.status(404).json({ error: "Позицію замовлення не знайдено" });
+    }
+    res.json(deletedItems[0]);
+  } catch (error) {
+    console.error("Помилка видалення позиції замовлення:", error);
+    res.status(500).json({ error: "Не вдалося видалити позицію замовлення" });
   }
 });
 

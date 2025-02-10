@@ -1,6 +1,6 @@
 {
-  "id": "6263a41e-39f7-4cad-91d3-29a860a32d2a",
-  "prevId": "00000000-0000-0000-0000-000000000000",
+  "id": "4c8ced91-b7c5-45b3-9b52-8c26ce2fba9d",
+  "prevId": "6263a41e-39f7-4cad-91d3-29a860a32d2a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -359,6 +359,12 @@
         "discount": {
           "name": "discount",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         },
