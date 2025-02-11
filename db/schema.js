@@ -116,7 +116,6 @@ import {
   jsonb,
 } from "drizzle-orm/pg-core";
 
-
 // Roles table
 export const roles = pgTable("roles", {
   roleId: serial("roleId").primaryKey(),
@@ -169,7 +168,7 @@ export const products = pgTable("products", {
   discount: integer("discount"),
   name: text("name"),
   description: text("description"),
-  imageUrl: text("imageUrl"),
+  imageUrls: text("imageUrl").array(),
 });
 
 // ProductSizes table (новий підхід для збереження розмірів)

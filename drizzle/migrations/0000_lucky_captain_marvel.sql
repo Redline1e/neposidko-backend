@@ -48,8 +48,9 @@ CREATE TABLE "products" (
 	"brandId" integer,
 	"price" integer,
 	"discount" integer,
+	"name" text,
 	"description" text,
-	"imageUrl" text
+	"imageUrl" text[]
 );
 --> statement-breakpoint
 CREATE TABLE "reviews" (

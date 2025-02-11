@@ -1,5 +1,5 @@
 {
-  "id": "6263a41e-39f7-4cad-91d3-29a860a32d2a",
+  "id": "8ec175bb-5c5d-4694-b97c-b8f92440bbb8",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -362,6 +362,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "description": {
           "name": "description",
           "type": "text",
@@ -370,7 +376,7 @@
         },
         "imageUrl": {
           "name": "imageUrl",
-          "type": "text",
+          "type": "text[]",
           "primaryKey": false,
           "notNull": false
         }

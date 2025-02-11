@@ -23,16 +23,6 @@ const app = express();
 
 app.use(cors());
 app.use(express.json());
-// app.use(
-//   session({
-//     secret: process.env.AUTH_SECRET,
-//     resave: false,
-//     saveUninitialized: false,
-//   })
-// );
-// app.use(passport.initialize());
-// app.use(passport.session());
-
 //-------------------------------------------------------USERS----------------------------------------------------------------------
 
 app.post("/register", async (req, res) => {
@@ -160,6 +150,56 @@ app.get("/protected", authenticate, async (req, res) => {
   }
 });
 
+app.put("/user", authenticate, async (req, res) => {
+  try {
+    const { name, email } = req.body;
+    if (!name || !email) {
+      return res.status(400).json({ error: "Усі поля обов'язкові!" });
+    }
+    const { userId } = req.user;
+
+    const updatedUsers = await db
+      .update(users)
+      .set({ name, email })
+      .where(eq(users.userId, userId))
+      .returning({
+        userId: users.userId,
+        name: users.name,
+        email: users.email,
+        roleId: users.roleId,
+      });
+
+    if (!updatedUsers || updatedUsers.length === 0) {
+      return res.status(500).json({ error: "Не вдалося оновити користувача" });
+    }
+    res.json(updatedUsers[0]);
+  } catch (error) {
+    console.error("Помилка оновлення користувача:", error);
+    res.status(500).json({ error: "Виникла помилка на сервері" });
+  }
+});
+
+app.delete("/user", authenticate, async (req, res) => {
+  try {
+    const { userId } = req.user;
+
+    const deletedUser = await db
+      .delete()
+      .from(users)
+      .where(eq(users.userId, userId))
+      .returning();
+
+    if (!deletedUser || deletedUser.length === 0) {
+      return res.status(404).json({ error: "Користувач не знайдений" });
+    }
+
+    res.json({ message: "Користувача успішно видалено" });
+  } catch (error) {
+    console.error("Не вдалося видалити користувача:", error);
+    res.status(500).json({ error: "Виникла помилка на сервері" });
+  }
+});
+
 app.get("/getUserRole", authenticate, async (req, res) => {
   try {
     const { userId } = req.user;
@@ -184,24 +224,21 @@ app.get("/getUserRole", authenticate, async (req, res) => {
 
 //-------------------------------------------------------PRODUCTS----------------------------------------------------------------------
 
-// GET /products
 app.get("/products", async (req, res) => {
   try {
-    // Отримуємо основні дані продукту (articleNumber, name, price, discount, description, imageUrl, бренд)
     const allProducts = await db
       .select({
         articleNumber: products.articleNumber,
-        name: products.name, // нове поле
+        name: products.name,
         price: products.price,
         discount: products.discount,
         description: products.description,
-        imageUrl: products.imageUrl,
+        imageUrls: products.imageUrls,
         brand: brands.name,
       })
       .from(products)
       .leftJoin(brands, eq(products.brandId, brands.brandId));
 
-    // Для кожного продукту отримуємо доступні розміри з таблиці productSizes
     const productsWithSizes = await Promise.all(
       allProducts.map(async (prod) => {
         const sizes = await db
@@ -222,7 +259,6 @@ app.get("/products", async (req, res) => {
   }
 });
 
-// POST /products
 app.post("/products", async (req, res) => {
   try {
     const {
@@ -230,24 +266,23 @@ app.post("/products", async (req, res) => {
       brandId,
       price,
       discount,
-      name, // нове поле
+      name,
       description,
-      imageUrl,
+      imageUrls,
       sizes,
     } = req.body;
 
-    // Перевірка обов’язкових полів (тепер включає name)
     if (
       !articleNumber ||
       !brandId ||
       !price ||
       !name ||
       !description ||
-      !imageUrl
+      !imageUrls
     ) {
       return res.status(400).json({
         error:
-          "Поля articleNumber, brandId, price, name, description та imageUrl є обов'язковими",
+          "Поля articleNumber, brandId, price, name, description та imageUrls є обов'язковими",
       });
     }
 
@@ -258,13 +293,12 @@ app.post("/products", async (req, res) => {
         brandId,
         price,
         discount: discount || 0,
-        name, // вставляємо name
+        name,
         description,
-        imageUrl,
+        imageUrls,
       })
       .returning();
 
-    // Якщо передано розміри, додаємо їх у таблицю productSizes
     if (sizes && Array.isArray(sizes)) {
       for (const sizeObj of sizes) {
         const { size, stock } = sizeObj;
@@ -284,18 +318,17 @@ app.post("/products", async (req, res) => {
   }
 });
 
-// GET /products/:articleNumber
-app.get("/products/:articleNumber", async (req, res) => {
+app.get("/product/:articleNumber", async (req, res) => {
   try {
     const { articleNumber } = req.params;
     const product = await db
       .select({
         articleNumber: products.articleNumber,
-        name: products.name, // додаємо поле name
+        name: products.name,
         price: products.price,
         discount: products.discount,
         description: products.description,
-        imageUrl: products.imageUrl,
+        imageUrls: products.imageUrls,
         brand: brands.name,
       })
       .from(products)
@@ -404,6 +437,31 @@ app.post("/brands", async (req, res) => {
   }
 });
 
+app.get("/brand/:brandId", async (req, res) => {
+    try {
+      const { brandId } = req.params;
+  
+      const brand = await db
+        .select({
+          name: brands.name,
+        })
+        .from(brands)
+        .where(eq(brands.brandId, Number(brandId)))
+        .limit(1)
+        .then((result) => result[0]);
+  
+      if (!brand) {
+        return res.status(404).json({ error: "Бренд не знайдено" });
+      }
+  
+      res.json({ brand });
+    } catch (error) {
+      console.error("Помилка отримання бренду за brandId:", error);
+      res.status(500).json({ error: "Не вдалося отримати дані бренду" });
+    }
+  });
+  
+
 //-------------------------------------------------------ORDERS--------------------------------------------------------------------------
 app.get("/orders", async (req, res) => {
   try {
@@ -448,7 +506,6 @@ app.post("/orders", async (req, res) => {
 });
 
 //---------------------------------------------------ORDER-ITEMS--------------------------------------------------------------------
-// GET /order-items – отримання всіх елементів замовлення
 app.get("/order-items", async (req, res) => {
   try {
     const allOrderItems = await db
@@ -537,156 +594,6 @@ app.delete("/order-items/:id", async (req, res) => {
 });
 
 //------------------------------------------------------------------------------------------------------------------------------------
-
-// passport.use(
-//   new GoogleStrategy(
-//     {
-//       clientID: process.env.AUTH_GOOGLE_ID,
-//       clientSecret: process.env.AUTH_GOOGLE_SECRET,
-//       callbackURL: "http://localhost:5000/auth/google/callback",
-//     },
-//     async (accessToken, refreshToken, profile, done) => {
-//       try {
-//         console.log("Google Profile:", profile); // Додано логування
-
-//         if (!profile.emails || profile.emails.length === 0) {
-//           return done(new Error("Email not provided by Google"), null);
-//         }
-
-//         const email = profile.emails[0].value;
-//         console.log("Checking email:", email);
-
-//         const existingUser = await db
-//           .select()
-//           .from(users)
-//           .where(eq(users.email, email))
-//           .limit(1)
-//           .then((res) => res || []); // Гарантуємо, що буде масив
-
-//         console.log("Existing user found:", existingUser);
-
-//         if (existingUser.length > 0) {
-//           return done(null, existingUser[0]);
-//         }
-
-//         const newUser = await db
-//           .insert(users)
-//           .values({
-//             email,
-//             name: profile.displayName,
-//             password: null,
-//             roleId: 2,
-//           })
-//           .returning({
-//             userId: users.userId,
-//             name: users.name,
-//             email: users.email,
-//           })
-//           .then((res) => res[0]); // Отримуємо перший запис
-
-//         console.log("New user created:", newUser);
-//         if (!newUser) {
-//           return done(
-//             new Error("Не вдалося створити нового користувача"),
-//             null
-//           );
-//         }
-
-//         return done(null, newUser);
-//       } catch (error) {
-//         console.error("Error in Google Auth:", error);
-//         return done(error, null);
-//       }
-//     }
-//   )
-// );
-
-// passport.serializeUser((user, done) => {
-//   done(null, user.userId);
-// });
-
-// passport.deserializeUser(async (id, done) => {
-//   const user = await db
-//     .select({
-//       userId: users.userId,
-//       name: users.name,
-//       email: users.email,
-//     })
-//     .from(users)
-//     .where(eq(users.userId, id))
-//     .limit(1)
-//     .then((res) => res[0]);
-
-//   if (!user) {
-//     return done(null, false);
-//   }
-
-//   return done(null, user);
-// });
-
-// app.get("/api/user", async (req, res) => {
-//   try {
-//     const userId = req.user.userId; // Витягуємо з JWT
-//     const user = await db
-//       .select({ userId: users.userId, name: users.name, email: users.email })
-//       .from(users)
-//       .where(eq(users.userId, userId))
-//       .limit(1)
-//       .then((res) => res[0]);
-
-//     if (!user)
-//       return res.status(404).json({ error: "Користувач не знайдений" });
-
-//     res.json(user);
-//   } catch (error) {
-//     res.status(500).json({ error: "Помилка отримання користувача" });
-//   }
-// });
-
-// app.put("/api/user", async (req, res) => {
-//   try {
-//     const { name, email } = req.body;
-//     const userId = req.user.userId;
-
-//     if (!name || !email) {
-//       return res.status(400).json({ error: "Усі поля обов'язкові!" });
-//     }
-
-//     await db.update(users).set({ name, email }).where(eq(users.userId, userId));
-
-//     res.json({ success: true });
-//   } catch (error) {
-//     res.status(500).json({ error: "Помилка оновлення даних" });
-//   }
-// });
-
-// app.get(
-//   "/auth/google",
-//   passport.authenticate("google", { scope: ["profile", "email"] })
-// );
-
-// app.get(
-//   "/auth/google/callback",
-//   passport.authenticate("google", {
-//     failureRedirect: "/login",
-//     session: false,
-//   }),
-//   (req, res) => {
-//     if (!req.user) {
-//       return res.status(500).json({ error: "Authentication failed" });
-//     }
-
-//     const token = jwt.sign(
-//       { userId: req.user.userId },
-//       process.env.JWT_SECRET,
-//       { expiresIn: "1h" }
-//     );
-
-//     res.redirect(`http://localhost:3000?token=${token}`);
-//   }
-// );
-
-//-----------------------------------------------------------SERVER-RUN-----------------------------------------------------------------
 
 app.listen(5000, () => {
   console.log("Server running on port 5000");
