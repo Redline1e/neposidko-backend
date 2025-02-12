@@ -9,6 +9,13 @@ CREATE TABLE "categories" (
 	"imageUrl" text
 );
 --> statement-breakpoint
+CREATE TABLE "favorites" (
+	"favoriteId" serial PRIMARY KEY NOT NULL,
+	"userId" integer NOT NULL,
+	"articleNumber" text NOT NULL,
+	"createdAt" text NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "orderItems" (
 	"productOrderId" serial PRIMARY KEY NOT NULL,
 	"orderId" integer NOT NULL,
@@ -76,6 +83,8 @@ CREATE TABLE "users" (
 	CONSTRAINT "users_email_unique" UNIQUE("email")
 );
 --> statement-breakpoint
+ALTER TABLE "favorites" ADD CONSTRAINT "favorites_userId_users_userId_fk" FOREIGN KEY ("userId") REFERENCES "public"."users"("userId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "favorites" ADD CONSTRAINT "favorites_articleNumber_products_articleNumber_fk" FOREIGN KEY ("articleNumber") REFERENCES "public"."products"("articleNumber") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "orderItems" ADD CONSTRAINT "orderItems_orderId_orders_orderId_fk" FOREIGN KEY ("orderId") REFERENCES "public"."orders"("orderId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "orderItems" ADD CONSTRAINT "orderItems_articleNumber_products_articleNumber_fk" FOREIGN KEY ("articleNumber") REFERENCES "public"."products"("articleNumber") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "orders" ADD CONSTRAINT "orders_userId_users_userId_fk" FOREIGN KEY ("userId") REFERENCES "public"."users"("userId") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint

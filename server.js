@@ -10,19 +10,27 @@ import {
   orders,
   orderItems,
   productSizes,
+  favorites,
 } from "./db/schema.js";
 
 import { eq } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import session from "express-session";
 import { authenticate } from "./middleware/auth.js";
 
 dotenv.config();
 const app = express();
 
-app.use(cors());
+app.use(
+  cors({
+    origin: "http://localhost:3000", // Frontend URL
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
 app.use(express.json());
+
 //-------------------------------------------------------USERS----------------------------------------------------------------------
 
 app.post("/register", async (req, res) => {
@@ -438,29 +446,28 @@ app.post("/brands", async (req, res) => {
 });
 
 app.get("/brand/:brandId", async (req, res) => {
-    try {
-      const { brandId } = req.params;
-  
-      const brand = await db
-        .select({
-          name: brands.name,
-        })
-        .from(brands)
-        .where(eq(brands.brandId, Number(brandId)))
-        .limit(1)
-        .then((result) => result[0]);
-  
-      if (!brand) {
-        return res.status(404).json({ error: "Бренд не знайдено" });
-      }
-  
-      res.json({ brand });
-    } catch (error) {
-      console.error("Помилка отримання бренду за brandId:", error);
-      res.status(500).json({ error: "Не вдалося отримати дані бренду" });
+  try {
+    const { brandId } = req.params;
+
+    const brand = await db
+      .select({
+        name: brands.name,
+      })
+      .from(brands)
+      .where(eq(brands.brandId, Number(brandId)))
+      .limit(1)
+      .then((result) => result[0]);
+
+    if (!brand) {
+      return res.status(404).json({ error: "Бренд не знайдено" });
     }
-  });
-  
+
+    res.json({ brand });
+  } catch (error) {
+    console.error("Помилка отримання бренду за brandId:", error);
+    res.status(500).json({ error: "Не вдалося отримати дані бренду" });
+  }
+});
 
 //-------------------------------------------------------ORDERS--------------------------------------------------------------------------
 app.get("/orders", async (req, res) => {
@@ -505,7 +512,7 @@ app.post("/orders", async (req, res) => {
   }
 });
 
-//---------------------------------------------------ORDER-ITEMS--------------------------------------------------------------------
+//---------------------------------------------------ORDER-ITEMS-------------------------------------------------------------------------
 app.get("/order-items", async (req, res) => {
   try {
     const allOrderItems = await db
@@ -527,28 +534,54 @@ app.get("/order-items", async (req, res) => {
 
 app.post("/order-items", async (req, res) => {
   try {
-    const { orderId, articleNumber, size, quantity } = req.body;
+    const { articleNumber, size, quantity } = req.body;
+    const { userId } = req.user;
 
-    if (!orderId || !articleNumber || !size || !quantity) {
+    if (!articleNumber || !size || quantity === undefined) {
       return res.status(400).json({
-        error: "Поля orderId, articleNumber, size та quantity є обов'язковими",
+        error: "articleNumber, size and quantity are required",
       });
     }
 
-    const [newOrderItem] = await db
+    // Find the current active order for the user
+    let currentOrder = await db
+      .select("orderId")
+      .from(orders)
+      .where(eq(orders.userId, userId))
+      .where(eq(orders.orderStatusId, 1)) // Assuming 1 is the status for active orders
+      .limit(1)
+      .then((res) => res[0]);
+
+    if (!currentOrder) {
+      // If no active order, create a new one
+      const newOrder = await db
+        .insert(orders)
+        .values({
+          userId,
+          orderStatusId: 1, // Active order status
+          cartData: [],
+        })
+        .returning("orderId")
+        .then((res) => res[0]);
+
+      currentOrder = newOrder;
+    }
+
+    // Add the item to the order-items table
+    const newOrderItem = await db
       .insert(orderItems)
       .values({
-        orderId,
+        orderId: currentOrder.orderId,
         articleNumber,
         size,
         quantity,
       })
       .returning();
 
-    res.status(201).json(newOrderItem);
+    res.status(201).json(newOrderItem[0]);
   } catch (error) {
     console.error("Error adding order item:", error);
-    res.status(500).json({ error: "Error adding order item" });
+    res.status(500).json({ error: "Error adding item to cart" });
   }
 });
 
@@ -592,8 +625,155 @@ app.delete("/order-items/:id", async (req, res) => {
     res.status(500).json({ error: "Не вдалося видалити позицію замовлення" });
   }
 });
+//-------------------------------------------------------FAVORITES-----------------------------------------------------------------------
+// Endpoint to add a product to favorites
+app.post("/favorites", authenticate, async (req, res) => {
+  try {
+    const { articleNumber } = req.body;
+    const { userId } = req.user;
 
-//------------------------------------------------------------------------------------------------------------------------------------
+    if (!articleNumber) {
+      return res
+        .status(400)
+        .json({ error: "Поле articleNumber є обов'язковим" });
+    }
+
+    // Check if the product is already in favorites
+    const existingFavorite = await db
+      .select()
+      .from(favorites)
+      .where(eq(favorites.userId, userId))
+      .where(eq(favorites.articleNumber, articleNumber))
+      .limit(1)
+      .then((res) => res[0]);
+
+    if (existingFavorite) {
+      return res.status(400).json({ error: "Цей товар вже в улюблених" });
+    }
+
+    const newFavorite = await db
+      .insert(favorites)
+      .values({
+        userId,
+        articleNumber,
+        createdAt: new Date().toISOString(),
+      })
+      .returning();
+
+    res.status(201).json(newFavorite[0]);
+  } catch (error) {
+    console.error("Помилка додавання в улюблені:", error);
+    res.status(500).json({ error: "Сталася внутрішня помилка сервера" });
+  }
+});
+
+// Endpoint to fetch the user's favorite products
+app.get("/favorites", authenticate, async (req, res) => {
+  try {
+    const { userId } = req.user;
+
+    const userFavorites = await db
+      .select({
+        articleNumber: favorites.articleNumber,
+        createdAt: favorites.createdAt,
+      })
+      .from(favorites)
+      .where(eq(favorites.userId, userId));
+
+    if (userFavorites.length === 0) {
+      return res.status(404).json({ error: "У вас немає улюблених товарів" });
+    }
+
+    // Fetch product details for each favorite product
+    const favoriteProducts = await Promise.all(
+      userFavorites.map(async (favorite) => {
+        const product = await db
+          .select({
+            articleNumber: products.articleNumber,
+            name: products.name,
+            price: products.price,
+            discount: products.discount,
+            imageUrls: products.imageUrls,
+          })
+          .from(products)
+          .where(eq(products.articleNumber, favorite.articleNumber))
+          .limit(1)
+          .then((res) => res[0]);
+
+        return product ? { ...product, createdAt: favorite.createdAt } : null;
+      })
+    );
+
+    res.json(favoriteProducts.filter(Boolean)); // Filter out null values
+  } catch (error) {
+    console.error("Помилка отримання улюблених товарів:", error);
+    res.status(500).json({ error: "Не вдалося отримати улюблені товари" });
+  }
+});
+
+//---------------------------------------------------REVIEWS------------------------------------------------------------------------------
+// app.get("/reviews/:articleNumber", async (req, res) => {
+//   try {
+//     const { articleNumber } = req.params;
+
+//     if (!articleNumber) {
+//       return res.status(400).json({ message: "articleNumber is required" });
+//     }
+
+//     // Отримання всіх відгуків для товару
+//     const reviews = await db
+//       .select()
+//       .from(reviews)
+//       .where(eq(reviews.articleNumber, Number(articleNumber)));
+
+//     if (reviews.length === 0) {
+//       return res
+//         .status(404)
+//         .json({ message: "No reviews found for this product" });
+//     }
+
+//     res.status(200).json(reviews);
+//   } catch (error) {
+//     console.error("Error fetching reviews:", error);
+//     res.status(500).json({ message: "Server error" });
+//   }
+// });
+
+// app.post("/reviews", authenticate, async (req, res) => {
+//   try {
+//     const { userId, articleNumber, rating, comment } = req.body;
+
+//     // Перевірка обов'язкових полів
+//     if (!userId || !articleNumber || !rating || !comment) {
+//       return res.status(400).json({ message: "All fields are required" });
+//     }
+
+//     // Перевірка на правильність articleNumber
+//     const parsedArticleNumber = Number(articleNumber);
+//     if (isNaN(parsedArticleNumber)) {
+//       return res.status(400).json({ message: "Invalid articleNumber" });
+//     }
+
+//     // Додавання нового відгуку
+//     const [newReview] = await db
+//       .insert(reviews)
+//       .values({
+//         userId,
+//         articleNumber: parsedArticleNumber,
+//         rating,
+//         comment,
+//         reviewDate: new Date().toISOString(),
+//       })
+//       .returning();
+
+//     res.status(201).json(newReview);
+//   } catch (error) {
+//     console.error("Error adding review:", error);
+//     res.status(500).json({ message: "Server error" });
+//   }
+// });
+
+//---------------------------------------------------------------------------------------------------------------------------------------
 
 app.listen(5000, () => {
   console.log("Server running on port 5000");
