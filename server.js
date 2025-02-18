@@ -149,9 +149,25 @@ app.post("/login", async (req, res) => {
 
 app.get("/protected", authenticate, async (req, res) => {
   try {
-    const { userId, name, email } = req.user;
+    const { userId } = req.user;
 
-    res.status(200).json({ userId, name, email });
+    // Отримуємо всі дані про користувача
+    const user = await db
+      .select({
+        userId: users.userId,
+        name: users.name,
+        email: users.email,
+      })
+      .from(users)
+      .where(eq(users.userId, userId))
+      .limit(1)
+      .then((res) => res[0]);
+
+    if (!user) {
+      return res.status(404).json({ error: "Користувач не знайдений" });
+    }
+
+    res.status(200).json(user); // Надсилаємо всі потрібні дані
   } catch (error) {
     console.error("Помилка отримання даних користувача:", error);
     res.status(500).json({ error: "Виникла помилка на сервері" });
