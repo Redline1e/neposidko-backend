@@ -626,7 +626,7 @@ app.delete("/order-items/:id", async (req, res) => {
   }
 });
 //-------------------------------------------------------FAVORITES-----------------------------------------------------------------------
-// Endpoint to add a product to favorites
+// Додавання товару в улюблені
 app.post("/favorites", authenticate, async (req, res) => {
   try {
     const { articleNumber } = req.body;
@@ -638,7 +638,6 @@ app.post("/favorites", authenticate, async (req, res) => {
         .json({ error: "Поле articleNumber є обов'язковим" });
     }
 
-    // Check if the product is already in favorites
     const existingFavorite = await db
       .select()
       .from(favorites)
@@ -667,7 +666,7 @@ app.post("/favorites", authenticate, async (req, res) => {
   }
 });
 
-// Endpoint to fetch the user's favorite products
+// Отримання улюблених товарів користувача
 app.get("/favorites", authenticate, async (req, res) => {
   try {
     const { userId } = req.user;
@@ -684,7 +683,7 @@ app.get("/favorites", authenticate, async (req, res) => {
       return res.status(404).json({ error: "У вас немає улюблених товарів" });
     }
 
-    // Fetch product details for each favorite product
+    // Отримання даних про кожен товар
     const favoriteProducts = await Promise.all(
       userFavorites.map(async (favorite) => {
         const product = await db
@@ -704,10 +703,68 @@ app.get("/favorites", authenticate, async (req, res) => {
       })
     );
 
-    res.json(favoriteProducts.filter(Boolean)); // Filter out null values
+    res.json(favoriteProducts.filter(Boolean));
   } catch (error) {
     console.error("Помилка отримання улюблених товарів:", error);
     res.status(500).json({ error: "Не вдалося отримати улюблені товари" });
+  }
+});
+
+// Перевірка, чи товар є в улюблених
+app.get("/favorites/:articleNumber", authenticate, async (req, res) => {
+  try {
+    const { articleNumber } = req.params;
+    const { userId } = req.user;
+
+    if (!articleNumber) {
+      return res
+        .status(400)
+        .json({ error: "Поле articleNumber є обов'язковим" });
+    }
+
+    const existingFavorite = await db
+      .select()
+      .from(favorites)
+      .where(eq(favorites.userId, userId))
+      .where(eq(favorites.articleNumber, articleNumber))
+      .limit(1)
+      .then((result) => result[0]);
+
+    res.json({ isFavorite: !!existingFavorite });
+  } catch (error) {
+    console.error("Помилка перевірки улюбленого товару:", error);
+    res.status(500).json({
+      error:
+        "Сталася внутрішня помилка сервера при перевірці улюбленого товару",
+    });
+  }
+});
+
+// Видалення товару з улюблених
+app.delete("/favorites/:articleNumber", authenticate, async (req, res) => {
+  try {
+    const { articleNumber } = req.params;
+    const { userId } = req.user;
+
+    const deletedFavorite = await db
+      .delete(favorites)
+      .where(eq(favorites.userId, userId))
+      .where(eq(favorites.articleNumber, articleNumber))
+      .returning();
+
+    if (!deletedFavorite || deletedFavorite.length === 0) {
+      return res
+        .status(404)
+        .json({ error: "Товар не знайдено у ваших улюблених" });
+    }
+
+    res.json({ message: "Товар успішно видалено з улюблених" });
+  } catch (error) {
+    console.error("Помилка видалення товару з улюблених:", error);
+    res.status(500).json({
+      error:
+        "Сталася внутрішня помилка сервера при видаленні товару з улюблених",
+    });
   }
 });
 
