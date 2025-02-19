@@ -22,6 +22,8 @@ export const users = pgTable("users", {
   name: text("name").notNull(),
   email: text("email").notNull().unique(),
   password: text("password").notNull(),
+  telephone: text("telephone"),
+  deliveryAddress: text("deliveryAddress"),
 });
 
 // OrderStatus table
@@ -133,5 +135,5 @@ export const favorites = pgTable("favorites", {
   articleNumber: text("articleNumber")
     .references(() => products.articleNumber, { onDelete: "cascade" })
     .notNull(),
-  createdAt: text("createdAt").notNull(), 
+  createdAt: text("createdAt").notNull(),
 });

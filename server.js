@@ -151,12 +151,14 @@ app.get("/protected", authenticate, async (req, res) => {
   try {
     const { userId } = req.user;
 
-    // Отримуємо всі дані про користувача
+    // Додано вибірку telephone та deliveryAddress
     const user = await db
       .select({
         userId: users.userId,
         name: users.name,
         email: users.email,
+        telephone: users.telephone,
+        deliveryAddress: users.deliveryAddress,
       })
       .from(users)
       .where(eq(users.userId, userId))
@@ -167,7 +169,7 @@ app.get("/protected", authenticate, async (req, res) => {
       return res.status(404).json({ error: "Користувач не знайдений" });
     }
 
-    res.status(200).json(user); // Надсилаємо всі потрібні дані
+    res.status(200).json(user);
   } catch (error) {
     console.error("Помилка отримання даних користувача:", error);
     res.status(500).json({ error: "Виникла помилка на сервері" });
@@ -176,20 +178,25 @@ app.get("/protected", authenticate, async (req, res) => {
 
 app.put("/user", authenticate, async (req, res) => {
   try {
-    const { name, email } = req.body;
+    // Тепер можна оновити не лише name та email, а й telephone і deliveryAddress
+    const { name, email, telephone, deliveryAddress } = req.body;
     if (!name || !email) {
-      return res.status(400).json({ error: "Усі поля обов'язкові!" });
+      return res
+        .status(400)
+        .json({ error: "Ім'я та електронна пошта обов'язкові!" });
     }
     const { userId } = req.user;
 
     const updatedUsers = await db
       .update(users)
-      .set({ name, email })
+      .set({ name, email, telephone, deliveryAddress })
       .where(eq(users.userId, userId))
       .returning({
         userId: users.userId,
         name: users.name,
         email: users.email,
+        telephone: users.telephone,
+        deliveryAddress: users.deliveryAddress,
         roleId: users.roleId,
       });
 
