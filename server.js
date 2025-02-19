@@ -11,10 +11,10 @@ import {
   orderItems,
   productSizes,
   favorites,
+  reviews,
 } from "./db/schema.js";
 
-import { eq, ilike } from "drizzle-orm";
-
+import { eq, ilike, and } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { authenticate } from "./middleware/auth.js";
@@ -98,7 +98,6 @@ app.post("/register", async (req, res, next) => {
   }
 });
 
-// Роут входу користувача
 app.post("/login", async (req, res, next) => {
   try {
     const { email, password } = req.body;
@@ -148,7 +147,6 @@ app.post("/login", async (req, res, next) => {
   }
 });
 
-// Захищений роут для отримання даних користувача
 app.get("/protected", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
@@ -176,7 +174,6 @@ app.get("/protected", authenticate, async (req, res, next) => {
   }
 });
 
-// Роут для оновлення даних користувача
 app.put("/user", authenticate, async (req, res, next) => {
   try {
     const { name, email, telephone, deliveryAddress } = req.body;
@@ -209,7 +206,6 @@ app.put("/user", authenticate, async (req, res, next) => {
   }
 });
 
-// Роут для видалення користувача
 app.delete("/user", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
@@ -230,7 +226,6 @@ app.delete("/user", authenticate, async (req, res, next) => {
   }
 });
 
-// Роут для отримання ролі користувача
 app.get("/getUserRole", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
@@ -251,6 +246,36 @@ app.get("/getUserRole", authenticate, async (req, res, next) => {
     next(error);
   }
 });
+
+app.get("/user/:userId", authenticate, async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+
+    const user = await db
+      .select({
+        userId: users.userId,
+        name: users.name,
+        email: users.email,
+        telephone: users.telephone,
+        deliveryAddress: users.deliveryAddress,
+        roleId: users.roleId,
+      })
+      .from(users)
+      .where(eq(users.userId, Number(userId)))
+      .limit(1)
+      .then((results) => results[0]);
+
+    if (!user) {
+      return next(createError(404, "Користувача не знайдено"));
+    }
+
+    res.status(200).json(user);
+  } catch (error) {
+    console.error("Помилка отримання користувача за ID:", error);
+    next(error);
+  }
+});
+
 //-------------------------------------------------------PRODUCTS----------------------------------------------------------------------
 
 app.get("/products", async (req, res) => {
@@ -385,7 +410,6 @@ app.get("/product/:articleNumber", async (req, res) => {
   }
 });
 
-// Endpoint для пошуку товарів за назвою
 app.get("/search", async (req, res) => {
   try {
     const { q } = req.query;
@@ -836,66 +860,158 @@ app.delete("/favorites/:articleNumber", authenticate, async (req, res) => {
 });
 
 //---------------------------------------------------REVIEWS------------------------------------------------------------------------------
-// app.get("/reviews/:articleNumber", async (req, res) => {
-//   try {
-//     const { articleNumber } = req.params;
 
-//     if (!articleNumber) {
-//       return res.status(400).json({ message: "articleNumber is required" });
-//     }
+// Створення відгуку
+app.post("/reviews", authenticate, async (req, res, next) => {
+  try {
+    const { articleNumber, rating, comment } = req.body;
+    if (!articleNumber || rating === undefined || comment === undefined) {
+      return next(
+        createError(400, "Обов'язкові поля: articleNumber, rating та comment")
+      );
+    }
 
-//     // Отримання всіх відгуків для товару
-//     const reviews = await db
-//       .select()
-//       .from(reviews)
-//       .where(eq(reviews.articleNumber, Number(articleNumber)));
+    // Перевірка, чи користувач вже залишив відгук для цього товару
+    const existingUserReview = await db
+      .select()
+      .from(reviews)
+      .where(
+        and(
+          eq(reviews.articleNumber, articleNumber),
+          eq(reviews.userId, req.user.userId)
+        )
+      )
+      .limit(1)
+      .then((results) => results[0]);
 
-//     if (reviews.length === 0) {
-//       return res
-//         .status(404)
-//         .json({ message: "No reviews found for this product" });
-//     }
+    if (existingUserReview) {
+      return next(createError(400, "Ви вже залишили відгук для цього товару"));
+    }
 
-//     res.status(200).json(reviews);
-//   } catch (error) {
-//     console.error("Error fetching reviews:", error);
-//     res.status(500).json({ message: "Server error" });
-//   }
-// });
+    const reviewDate = new Date().toISOString();
 
-// app.post("/reviews", authenticate, async (req, res) => {
-//   try {
-//     const { userId, articleNumber, rating, comment } = req.body;
+    const [newReview] = await db
+      .insert(reviews)
+      .values({
+        userId: req.user.userId,
+        articleNumber,
+        rating,
+        comment,
+        reviewDate,
+      })
+      .returning();
 
-//     // Перевірка обов'язкових полів
-//     if (!userId || !articleNumber || !rating || !comment) {
-//       return res.status(400).json({ message: "All fields are required" });
-//     }
+    res.status(201).json(newReview);
+  } catch (error) {
+    console.error("Помилка створення відгуку:", error);
+    next(error);
+  }
+});
 
-//     // Перевірка на правильність articleNumber
-//     const parsedArticleNumber = Number(articleNumber);
-//     if (isNaN(parsedArticleNumber)) {
-//       return res.status(400).json({ message: "Invalid articleNumber" });
-//     }
+// Отримання відгуків для заданого товару
+app.get("/reviews/:articleNumber", async (req, res, next) => {
+  try {
+    const { articleNumber } = req.params;
+    if (!articleNumber) {
+      return next(
+        createError(
+          400,
+          "Необхідно вказати articleNumber для отримання відгуків"
+        )
+      );
+    }
 
-//     // Додавання нового відгуку
-//     const [newReview] = await db
-//       .insert(reviews)
-//       .values({
-//         userId,
-//         articleNumber: parsedArticleNumber,
-//         rating,
-//         comment,
-//         reviewDate: new Date().toISOString(),
-//       })
-//       .returning();
+    const productReviews = await db
+      .select()
+      .from(reviews)
+      .where(eq(reviews.articleNumber, articleNumber))
+      .orderBy(reviews.reviewDate, "desc");
 
-//     res.status(201).json(newReview);
-//   } catch (error) {
-//     console.error("Error adding review:", error);
-//     res.status(500).json({ message: "Server error" });
-//   }
-// });
+    res.json(productReviews);
+  } catch (error) {
+    console.error("Помилка отримання відгуків:", error);
+    next(error);
+  }
+});
+
+// Редагування відгуку (тільки власника)
+app.put("/reviews/:reviewId", authenticate, async (req, res, next) => {
+  try {
+    const { reviewId } = req.params;
+    const { rating, comment } = req.body;
+    if (rating === undefined || comment === undefined) {
+      return next(
+        createError(400, "Обов'язкові поля для редагування: rating та comment")
+      );
+    }
+
+    // Отримуємо існуючий відгук
+    const existingReview = await db
+      .select()
+      .from(reviews)
+      .where(eq(reviews.reviewId, Number(reviewId)))
+      .limit(1)
+      .then((results) => results[0]);
+
+    if (!existingReview) {
+      return next(createError(404, "Відгук не знайдено"));
+    }
+
+    if (existingReview.userId !== req.user.userId) {
+      return next(createError(403, "Ви не маєте прав редагувати цей відгук"));
+    }
+
+    // Перевірка, чи відгук редагується протягом 10 хвилин від публікації
+    const reviewTimestamp = new Date(existingReview.reviewDate).getTime();
+    const nowTimestamp = Date.now();
+    if (nowTimestamp - reviewTimestamp > 10 * 60 * 1000) {
+      return next(createError(403, "Час для редагування відгуку вичерпано"));
+    }
+
+    const [updatedReview] = await db
+      .update(reviews)
+      .set({ rating, comment })
+      .where(eq(reviews.reviewId, Number(reviewId)))
+      .returning();
+
+    res.json(updatedReview);
+  } catch (error) {
+    console.error("Помилка оновлення відгуку:", error);
+    next(error);
+  }
+});
+// Видалення відгуку (тільки власника)
+app.delete("/reviews/:reviewId", authenticate, async (req, res, next) => {
+  try {
+    const { reviewId } = req.params;
+
+    // Отримуємо існуючий відгук
+    const existingReview = await db
+      .select()
+      .from(reviews)
+      .where(eq(reviews.reviewId, Number(reviewId)))
+      .limit(1)
+      .then((results) => results[0]);
+
+    if (!existingReview) {
+      return next(createError(404, "Відгук не знайдено"));
+    }
+
+    if (existingReview.userId !== req.user.userId) {
+      return next(createError(403, "Ви не маєте прав видаляти цей відгук"));
+    }
+
+    await db
+      .delete(reviews)
+      .where(eq(reviews.reviewId, Number(reviewId)))
+      .returning();
+
+    res.json({ message: "Відгук успішно видалено" });
+  } catch (error) {
+    console.error("Помилка видалення відгуку:", error);
+    next(error);
+  }
+});
 
 //---------------------------------------------------------------------------------------------------------------------------------------
 
