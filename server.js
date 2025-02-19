@@ -13,10 +13,12 @@ import {
   favorites,
 } from "./db/schema.js";
 
-import { eq } from "drizzle-orm";
+import { eq, ilike } from "drizzle-orm";
+
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { authenticate } from "./middleware/auth.js";
+import createError from "http-errors";
 
 dotenv.config();
 const app = express();
@@ -33,29 +35,28 @@ app.use(express.json());
 
 //-------------------------------------------------------USERS----------------------------------------------------------------------
 
-app.post("/register", async (req, res) => {
+app.post("/register", async (req, res, next) => {
   try {
     const { email, password } = req.body;
-
     if (!email || !password) {
-      return res.status(400).json({ error: "Усі поля обов'язкові!" });
+      // 400 – помилка клієнта
+      return next(createError(400, "Усі поля обов'язкові!"));
     }
 
     const sanitizedEmail = email.trim().toLowerCase();
     const name = sanitizedEmail.split("@")[0];
 
+    // Перевірка чи користувач з таким email вже існує
     const existingUser = await db
-      .select({
-        email: users.email,
-        userId: users.userId,
-      })
+      .select({ email: users.email, userId: users.userId })
       .from(users)
       .where(eq(users.email, sanitizedEmail))
       .limit(1)
-      .then((res) => res[0]);
+      .then((results) => results[0]);
 
     if (existingUser) {
-      return res.status(400).json({ error: "Користувач вже існує!" });
+      // 409 – конфлікт (користувач вже існує)
+      return next(createError(409, "Користувач вже існує!"));
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -66,7 +67,7 @@ app.post("/register", async (req, res) => {
         name,
         email: sanitizedEmail,
         password: hashedPassword,
-        roleId: 2,
+        roleId: 2, // звичайний користувач
       })
       .returning({
         userId: users.userId,
@@ -75,12 +76,11 @@ app.post("/register", async (req, res) => {
         roleId: users.roleId,
       });
 
-    if (insertedUsers.length === 0) {
-      return res.status(500).json({ error: "Не вдалося створити користувача" });
+    if (!insertedUsers || insertedUsers.length === 0) {
+      return next(createError(500, "Не вдалося створити користувача"));
     }
 
     const newUser = insertedUsers[0];
-
     const token = jwt.sign({ userId: newUser.userId }, process.env.JWT_SECRET, {
       expiresIn: "1h",
     });
@@ -94,16 +94,16 @@ app.post("/register", async (req, res) => {
     });
   } catch (error) {
     console.error("Помилка реєстрації:", error);
-    res.status(500).json({ error: "Сталася внутрішня помилка сервера" });
+    next(error);
   }
 });
 
-app.post("/login", async (req, res) => {
+// Роут входу користувача
+app.post("/login", async (req, res, next) => {
   try {
     const { email, password } = req.body;
-
     if (!email || !password) {
-      return res.status(400).json({ error: "Усі поля обов'язкові!" });
+      return next(createError(400, "Усі поля обов'язкові!"));
     }
 
     const sanitizedEmail = email.trim().toLowerCase();
@@ -117,23 +117,24 @@ app.post("/login", async (req, res) => {
       .from(users)
       .where(eq(users.email, sanitizedEmail))
       .limit(1)
-      .then((res) => res[0]);
+      .then((results) => results[0]);
 
     if (!user) {
-      return res.status(400).json({ error: "Користувача не знайдено!" });
+      return next(createError(404, "Користувача не знайдено!"));
     }
 
     if (!user.password) {
-      return res.status(400).json({
-        error:
-          "Ви зареєстровані через Google. Використовуйте Google для входу.",
-      });
+      return next(
+        createError(
+          400,
+          "Ви зареєстровані через Google. Використовуйте Google для входу."
+        )
+      );
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
-
     if (!isPasswordValid) {
-      return res.status(400).json({ error: "Невірний пароль!" });
+      return next(createError(401, "Невірний пароль!"));
     }
 
     const token = jwt.sign({ userId: user.userId }, process.env.JWT_SECRET, {
@@ -143,15 +144,14 @@ app.post("/login", async (req, res) => {
     res.json({ token });
   } catch (error) {
     console.error("Помилка входу:", error);
-    res.status(500).json({ error: "Сталася внутрішня помилка сервера" });
+    next(error);
   }
 });
 
-app.get("/protected", authenticate, async (req, res) => {
+// Захищений роут для отримання даних користувача
+app.get("/protected", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
-
-    // Додано вибірку telephone та deliveryAddress
     const user = await db
       .select({
         userId: users.userId,
@@ -163,30 +163,28 @@ app.get("/protected", authenticate, async (req, res) => {
       .from(users)
       .where(eq(users.userId, userId))
       .limit(1)
-      .then((res) => res[0]);
+      .then((results) => results[0]);
 
     if (!user) {
-      return res.status(404).json({ error: "Користувач не знайдений" });
+      return next(createError(404, "Користувач не знайдений"));
     }
 
     res.status(200).json(user);
   } catch (error) {
     console.error("Помилка отримання даних користувача:", error);
-    res.status(500).json({ error: "Виникла помилка на сервері" });
+    next(error);
   }
 });
 
-app.put("/user", authenticate, async (req, res) => {
+// Роут для оновлення даних користувача
+app.put("/user", authenticate, async (req, res, next) => {
   try {
-    // Тепер можна оновити не лише name та email, а й telephone і deliveryAddress
     const { name, email, telephone, deliveryAddress } = req.body;
     if (!name || !email) {
-      return res
-        .status(400)
-        .json({ error: "Ім'я та електронна пошта обов'язкові!" });
+      return next(createError(400, "Ім'я та електронна пошта обов'язкові!"));
     }
-    const { userId } = req.user;
 
+    const { userId } = req.user;
     const updatedUsers = await db
       .update(users)
       .set({ name, email, telephone, deliveryAddress })
@@ -201,19 +199,20 @@ app.put("/user", authenticate, async (req, res) => {
       });
 
     if (!updatedUsers || updatedUsers.length === 0) {
-      return res.status(500).json({ error: "Не вдалося оновити користувача" });
+      return next(createError(500, "Не вдалося оновити користувача"));
     }
+
     res.json(updatedUsers[0]);
   } catch (error) {
     console.error("Помилка оновлення користувача:", error);
-    res.status(500).json({ error: "Виникла помилка на сервері" });
+    next(error);
   }
 });
 
-app.delete("/user", authenticate, async (req, res) => {
+// Роут для видалення користувача
+app.delete("/user", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
-
     const deletedUser = await db
       .delete()
       .from(users)
@@ -221,38 +220,37 @@ app.delete("/user", authenticate, async (req, res) => {
       .returning();
 
     if (!deletedUser || deletedUser.length === 0) {
-      return res.status(404).json({ error: "Користувач не знайдений" });
+      return next(createError(404, "Користувач не знайдений"));
     }
 
     res.json({ message: "Користувача успішно видалено" });
   } catch (error) {
     console.error("Не вдалося видалити користувача:", error);
-    res.status(500).json({ error: "Виникла помилка на сервері" });
+    next(error);
   }
 });
 
-app.get("/getUserRole", authenticate, async (req, res) => {
+// Роут для отримання ролі користувача
+app.get("/getUserRole", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
-
     const user = await db
       .select({ roleId: users.roleId })
       .from(users)
       .where(eq(users.userId, userId))
       .limit(1)
-      .then((res) => res[0]);
+      .then((results) => results[0]);
 
     if (!user) {
-      return res.status(404).json({ error: "Користувач не знайдений" });
+      return next(createError(404, "Користувач не знайдений"));
     }
 
     res.json({ roleId: user.roleId });
   } catch (error) {
     console.error("Помилка отримання ролі користувача:", error);
-    res.status(500).json({ error: "Виникла помилка на сервері" });
+    next(error);
   }
 });
-
 //-------------------------------------------------------PRODUCTS----------------------------------------------------------------------
 
 app.get("/products", async (req, res) => {
@@ -384,6 +382,52 @@ app.get("/product/:articleNumber", async (req, res) => {
   } catch (error) {
     console.error("Error fetching product by articleNumber:", error);
     res.status(500).json({ error: "Не вдалося отримати дані продукту" });
+  }
+});
+
+// Endpoint для пошуку товарів за назвою
+app.get("/search", async (req, res) => {
+  try {
+    const { q } = req.query;
+    if (!q || typeof q !== "string") {
+      return res
+        .status(400)
+        .json({ error: "Будь ласка, вкажіть параметр пошуку (q)" });
+    }
+
+    // Використовуємо ilike для нечутливого до регістру пошуку
+    const productsList = await db
+      .select({
+        articleNumber: products.articleNumber,
+        name: products.name,
+        price: products.price,
+        discount: products.discount,
+        description: products.description,
+        imageUrls: products.imageUrls,
+        brand: brands.name,
+      })
+      .from(products)
+      .leftJoin(brands, eq(products.brandId, brands.brandId))
+      .where(ilike(products.name, `%${q}%`));
+
+    // Отримуємо розміри для кожного товару
+    const productsWithSizes = await Promise.all(
+      productsList.map(async (product) => {
+        const sizes = await db
+          .select({
+            size: productSizes.size,
+            stock: productSizes.stock,
+          })
+          .from(productSizes)
+          .where(eq(productSizes.articleNumber, product.articleNumber));
+        return { ...product, sizes };
+      })
+    );
+
+    res.json(productsWithSizes);
+  } catch (error) {
+    console.error("Помилка при пошуку товарів:", error);
+    res.status(500).json({ error: "Внутрішня помилка сервера" });
   }
 });
 
@@ -854,6 +898,14 @@ app.delete("/favorites/:articleNumber", authenticate, async (req, res) => {
 // });
 
 //---------------------------------------------------------------------------------------------------------------------------------------
+
+app.use((err, req, res, next) => {
+  // Лог помилки можна доповнити записом в систему моніторингу
+  console.error(err);
+  res.status(err.status || 500).json({
+    error: err.message || "Сталася внутрішня помилка сервера",
+  });
+});
 
 app.listen(5000, () => {
   console.log("Server running on port 5000");
