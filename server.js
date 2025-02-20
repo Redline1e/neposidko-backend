@@ -771,7 +771,7 @@ app.get("/favorites", authenticate, async (req, res) => {
       .where(eq(favorites.userId, userId));
 
     if (userFavorites.length === 0) {
-      return res.status(404).json({ error: "У вас немає улюблених товарів" });
+      return res.json([]);
     }
 
     // Отримання даних про кожен товар
