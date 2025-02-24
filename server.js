@@ -12,9 +12,10 @@ import {
   productSizes,
   favorites,
   reviews,
+  productCategories,
 } from "./db/schema.js";
 
-import { eq, ilike, and } from "drizzle-orm";
+import { eq, ilike, and, exists, inArray } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { authenticate } from "./middleware/auth.js";
@@ -289,10 +290,20 @@ app.get("/products", async (req, res) => {
         description: products.description,
         imageUrls: products.imageUrls,
         brand: brands.name,
+        category: categories.name, // отримуємо назву категорії
       })
       .from(products)
-      .leftJoin(brands, eq(products.brandId, brands.brandId));
+      .leftJoin(brands, eq(products.brandId, brands.brandId))
+      .leftJoin(
+        productCategories,
+        eq(products.articleNumber, productCategories.articleNumber)
+      )
+      .leftJoin(
+        categories,
+        eq(productCategories.categoryId, categories.categoryId)
+      );
 
+    // Обробка для отримання розмірів та інше...
     const productsWithSizes = await Promise.all(
       allProducts.map(async (prod) => {
         const sizes = await db
@@ -561,31 +572,30 @@ app.get("/brand/:brandId", async (req, res) => {
 });
 
 //-------------------------------------------------------ORDERS--------------------------------------------------------------------------
-app.get("/orders", async (req, res) => {
+app.get("/orders", authenticate, async (req, res) => {
   try {
-    const allOrders = await db
+    const { userId } = req.user; // Тепер req.user гарантовано існує
+    const userOrders = await db
       .select({
         orderId: orders.orderId,
         userId: orders.userId,
         orderStatusId: orders.orderStatusId,
         cartData: orders.cartData,
       })
-      .from(orders);
+      .from(orders)
+      .where(eq(orders.userId, userId));
 
-    res.json(allOrders);
+    res.json(userOrders);
   } catch (error) {
     console.error("Error fetching orders:", error);
     res.status(500).json({ error: "Failed to fetch orders" });
   }
 });
 
-app.post("/orders", async (req, res) => {
+app.post("/orders", authenticate, async (req, res) => {
   try {
-    const { userId, orderStatusId, cartData } = req.body;
-
-    if (!userId) {
-      return res.status(400).json({ error: "Поле userId є обов'язкове" });
-    }
+    const { orderStatusId, cartData } = req.body;
+    const { userId } = req.user;
 
     const [newOrder] = await db
       .insert(orders)
@@ -603,10 +613,11 @@ app.post("/orders", async (req, res) => {
   }
 });
 
-//---------------------------------------------------ORDER-ITEMS-------------------------------------------------------------------------
-app.get("/order-items", async (req, res) => {
+//---------------------------------------------------ORDER-ITEMS-------------------------------------------------------------------------// Отримання позицій замовлень для поточного користувача
+app.get("/order-items", authenticate, async (req, res) => {
   try {
-    const allOrderItems = await db
+    const { userId } = req.user;
+    const userOrderItems = await db
       .select({
         productOrderId: orderItems.productOrderId,
         orderId: orderItems.orderId,
@@ -614,16 +625,19 @@ app.get("/order-items", async (req, res) => {
         size: orderItems.size,
         quantity: orderItems.quantity,
       })
-      .from(orderItems);
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.orderId))
+      .where(eq(orders.userId, userId));
 
-    res.json(allOrderItems);
+    res.json(userOrderItems);
   } catch (error) {
     console.error("Error fetching order items:", error);
     res.status(500).json({ error: "Failed to fetch order items" });
   }
 });
 
-app.post("/order-items", async (req, res) => {
+// Додавання позиції замовлення
+app.post("/order-items", authenticate, async (req, res) => {
   try {
     const { articleNumber, size, quantity } = req.body;
     const { userId } = req.user;
@@ -634,31 +648,31 @@ app.post("/order-items", async (req, res) => {
       });
     }
 
-    // Find the current active order for the user
+    // Знаходимо активне замовлення для користувача
     let currentOrder = await db
       .select("orderId")
       .from(orders)
       .where(eq(orders.userId, userId))
-      .where(eq(orders.orderStatusId, 1)) // Assuming 1 is the status for active orders
+      .where(eq(orders.orderStatusId, 1)) // Припускаємо, що 1 – статус активного замовлення
       .limit(1)
-      .then((res) => res[0]);
+      .then((result) => result[0]);
 
     if (!currentOrder) {
-      // If no active order, create a new one
+      // Якщо активного замовлення немає, створюємо нове
       const newOrder = await db
         .insert(orders)
         .values({
           userId,
-          orderStatusId: 1, // Active order status
+          orderStatusId: 1,
           cartData: [],
         })
         .returning("orderId")
-        .then((res) => res[0]);
+        .then((result) => result[0]);
 
       currentOrder = newOrder;
     }
 
-    // Add the item to the order-items table
+    // Додаємо позицію до таблиці orderItems
     const newOrderItem = await db
       .insert(orderItems)
       .values({
@@ -676,7 +690,8 @@ app.post("/order-items", async (req, res) => {
   }
 });
 
-app.put("/order-items/:id", async (req, res) => {
+// Оновлення позиції замовлення
+app.put("/order-items/:id", authenticate, async (req, res) => {
   try {
     const { id } = req.params;
     const { size, quantity } = req.body;
@@ -685,14 +700,36 @@ app.put("/order-items/:id", async (req, res) => {
         .status(400)
         .json({ error: "Поля size та quantity є обов'язковими" });
     }
+    const { userId } = req.user;
+
+    // Знаходимо позицію замовлення за id
+    const orderItemData = await db
+      .select()
+      .from(orderItems)
+      .where(eq(orderItems.productOrderId, Number(id)))
+      .then((result) => result[0]);
+
+    if (!orderItemData) {
+      return res.status(404).json({ error: "Позицію замовлення не знайдено" });
+    }
+
+    // Перевіряємо, чи належить позиція замовлення поточному користувачу
+    const orderData = await db
+      .select()
+      .from(orders)
+      .where(eq(orders.orderId, orderItemData.orderId))
+      .then((result) => result[0]);
+
+    if (!orderData || orderData.userId !== userId) {
+      return res.status(403).json({ error: "Неавторизована дія" });
+    }
+
     const updatedOrderItems = await db
       .update(orderItems)
       .set({ size, quantity })
       .where(eq(orderItems.productOrderId, Number(id)))
       .returning();
-    if (updatedOrderItems.length === 0) {
-      return res.status(404).json({ error: "Позицію замовлення не знайдено" });
-    }
+
     res.json(updatedOrderItems[0]);
   } catch (error) {
     console.error("Error updating order item:", error);
@@ -700,22 +737,46 @@ app.put("/order-items/:id", async (req, res) => {
   }
 });
 
-app.delete("/order-items/:id", async (req, res) => {
+// Видалення позиції замовлення
+app.delete("/order-items/:id", authenticate, async (req, res) => {
   try {
     const { id } = req.params;
+    const { userId } = req.user;
+
+    // Знаходимо позицію замовлення
+    const orderItemData = await db
+      .select()
+      .from(orderItems)
+      .where(eq(orderItems.productOrderId, Number(id)))
+      .then((result) => result[0]);
+
+    if (!orderItemData) {
+      return res.status(404).json({ error: "Позицію замовлення не знайдено" });
+    }
+
+    // Перевіряємо, чи належить замовлення користувачу
+    const orderData = await db
+      .select()
+      .from(orders)
+      .where(eq(orders.orderId, orderItemData.orderId))
+      .then((result) => result[0]);
+
+    if (!orderData || orderData.userId !== userId) {
+      return res.status(403).json({ error: "Неавторизована дія" });
+    }
+
     const deletedItems = await db
       .delete(orderItems)
       .where(eq(orderItems.productOrderId, Number(id)))
       .returning();
-    if (deletedItems.length === 0) {
-      return res.status(404).json({ error: "Позицію замовлення не знайдено" });
-    }
+
     res.json(deletedItems[0]);
   } catch (error) {
     console.error("Помилка видалення позиції замовлення:", error);
     res.status(500).json({ error: "Не вдалося видалити позицію замовлення" });
   }
 });
+
 //-------------------------------------------------------FAVORITES-----------------------------------------------------------------------
 // Додавання товару в улюблені
 app.post("/favorites", authenticate, async (req, res) => {
