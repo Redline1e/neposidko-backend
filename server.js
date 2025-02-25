@@ -1,7 +1,12 @@
 import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
+import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import createError from "http-errors";
 import { db } from "./db/index.js";
+import { eq, ilike, and } from "drizzle-orm";
+import { authenticate } from "./middleware/auth.js";
 import {
   products,
   users,
@@ -14,12 +19,6 @@ import {
   reviews,
   productCategories,
 } from "./db/schema.js";
-
-import { eq, ilike, and, exists, inArray } from "drizzle-orm";
-import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
-import { authenticate } from "./middleware/auth.js";
-import createError from "http-errors";
 
 dotenv.config();
 const app = express();
@@ -34,13 +33,18 @@ app.use(
 
 app.use(express.json());
 
+// Допоміжна функція для отримання першого результату запиту
+const fetchOne = async (query) => {
+  const results = await query;
+  return results[0];
+};
+
 //-------------------------------------------------------USERS----------------------------------------------------------------------
 
 app.post("/register", async (req, res, next) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
-      // 400 – помилка клієнта
       return next(createError(400, "Усі поля обов'язкові!"));
     }
 
@@ -48,15 +52,15 @@ app.post("/register", async (req, res, next) => {
     const name = sanitizedEmail.split("@")[0];
 
     // Перевірка чи користувач з таким email вже існує
-    const existingUser = await db
-      .select({ email: users.email, userId: users.userId })
-      .from(users)
-      .where(eq(users.email, sanitizedEmail))
-      .limit(1)
-      .then((results) => results[0]);
+    const existingUser = await fetchOne(
+      db
+        .select({ email: users.email, userId: users.userId })
+        .from(users)
+        .where(eq(users.email, sanitizedEmail))
+        .limit(1)
+    );
 
     if (existingUser) {
-      // 409 – конфлікт (користувач вже існує)
       return next(createError(409, "Користувач вже існує!"));
     }
 
@@ -108,16 +112,17 @@ app.post("/login", async (req, res, next) => {
 
     const sanitizedEmail = email.trim().toLowerCase();
 
-    const user = await db
-      .select({
-        userId: users.userId,
-        email: users.email,
-        password: users.password,
-      })
-      .from(users)
-      .where(eq(users.email, sanitizedEmail))
-      .limit(1)
-      .then((results) => results[0]);
+    const user = await fetchOne(
+      db
+        .select({
+          userId: users.userId,
+          email: users.email,
+          password: users.password,
+        })
+        .from(users)
+        .where(eq(users.email, sanitizedEmail))
+        .limit(1)
+    );
 
     if (!user) {
       return next(createError(404, "Користувача не знайдено!"));
@@ -151,18 +156,19 @@ app.post("/login", async (req, res, next) => {
 app.get("/protected", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
-    const user = await db
-      .select({
-        userId: users.userId,
-        name: users.name,
-        email: users.email,
-        telephone: users.telephone,
-        deliveryAddress: users.deliveryAddress,
-      })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1)
-      .then((results) => results[0]);
+    const user = await fetchOne(
+      db
+        .select({
+          userId: users.userId,
+          name: users.name,
+          email: users.email,
+          telephone: users.telephone,
+          deliveryAddress: users.deliveryAddress,
+        })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1)
+    );
 
     if (!user) {
       return next(createError(404, "Користувач не знайдений"));
@@ -230,12 +236,13 @@ app.delete("/user", authenticate, async (req, res, next) => {
 app.get("/getUserRole", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
-    const user = await db
-      .select({ roleId: users.roleId })
-      .from(users)
-      .where(eq(users.userId, userId))
-      .limit(1)
-      .then((results) => results[0]);
+    const user = await fetchOne(
+      db
+        .select({ roleId: users.roleId })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1)
+    );
 
     if (!user) {
       return next(createError(404, "Користувач не знайдений"));
@@ -251,20 +258,20 @@ app.get("/getUserRole", authenticate, async (req, res, next) => {
 app.get("/user/:userId", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.params;
-
-    const user = await db
-      .select({
-        userId: users.userId,
-        name: users.name,
-        email: users.email,
-        telephone: users.telephone,
-        deliveryAddress: users.deliveryAddress,
-        roleId: users.roleId,
-      })
-      .from(users)
-      .where(eq(users.userId, Number(userId)))
-      .limit(1)
-      .then((results) => results[0]);
+    const user = await fetchOne(
+      db
+        .select({
+          userId: users.userId,
+          name: users.name,
+          email: users.email,
+          telephone: users.telephone,
+          deliveryAddress: users.deliveryAddress,
+          roleId: users.roleId,
+        })
+        .from(users)
+        .where(eq(users.userId, Number(userId)))
+        .limit(1)
+    );
 
     if (!user) {
       return next(createError(404, "Користувача не знайдено"));
@@ -279,7 +286,7 @@ app.get("/user/:userId", authenticate, async (req, res, next) => {
 
 //-------------------------------------------------------PRODUCTS----------------------------------------------------------------------
 
-app.get("/products", async (req, res) => {
+app.get("/products", async (req, res, next) => {
   try {
     const allProducts = await db
       .select({
@@ -290,7 +297,8 @@ app.get("/products", async (req, res) => {
         description: products.description,
         imageUrls: products.imageUrls,
         brand: brands.name,
-        category: categories.name, // отримуємо назву категорії
+        category: categories.name, // Назва категорії
+        categoryId: categories.categoryId, // Ідентифікатор категорії
       })
       .from(products)
       .leftJoin(brands, eq(products.brandId, brands.brandId))
@@ -303,7 +311,7 @@ app.get("/products", async (req, res) => {
         eq(productCategories.categoryId, categories.categoryId)
       );
 
-    // Обробка для отримання розмірів та інше...
+    // Отримання розмірів для кожного товару
     const productsWithSizes = await Promise.all(
       allProducts.map(async (prod) => {
         const sizes = await db
@@ -320,15 +328,16 @@ app.get("/products", async (req, res) => {
     res.json(productsWithSizes);
   } catch (error) {
     console.error("Error fetching products:", error);
-    res.status(500).json({ error: "Failed to fetch products" });
+    next(createError(500, "Failed to fetch products"));
   }
 });
 
-app.post("/products", async (req, res) => {
+app.post("/products", async (req, res, next) => {
   try {
     const {
       articleNumber,
       brandId,
+      categoryId, // отримуємо categoryId з тіла запиту
       price,
       discount,
       name,
@@ -340,17 +349,21 @@ app.post("/products", async (req, res) => {
     if (
       !articleNumber ||
       !brandId ||
+      !categoryId || // перевірка наявності categoryId
       !price ||
       !name ||
       !description ||
       !imageUrls
     ) {
-      return res.status(400).json({
-        error:
-          "Поля articleNumber, brandId, price, name, description та imageUrls є обов'язковими",
-      });
+      return next(
+        createError(
+          400,
+          "Поля articleNumber, brandId, categoryId, price, name, description та imageUrls є обов'язковими"
+        )
+      );
     }
 
+    // Вставка товару в таблицю products
     const [newProduct] = await db
       .insert(products)
       .values({
@@ -364,6 +377,14 @@ app.post("/products", async (req, res) => {
       })
       .returning();
 
+    // Вставка запису в productCategories для прив'язки категорії
+    await db.insert(productCategories).values({
+      articleNumber,
+      categoryId, // використовуємо categoryId, отриманий з тіла запиту
+      imageUrl: imageUrls[0], // або інше значення, яке ви хочете зберегти
+    });
+
+    // Вставка розмірів
     if (sizes && Array.isArray(sizes)) {
       for (const sizeObj of sizes) {
         const { size, stock } = sizeObj;
@@ -379,31 +400,32 @@ app.post("/products", async (req, res) => {
     res.status(201).json(newProduct);
   } catch (error) {
     console.error("Error adding product:", error);
-    res.status(500).json({ error: "Error adding product" });
+    next(createError(500, "Error adding product"));
   }
 });
 
-app.get("/product/:articleNumber", async (req, res) => {
+app.get("/product/:articleNumber", async (req, res, next) => {
   try {
     const { articleNumber } = req.params;
-    const product = await db
-      .select({
-        articleNumber: products.articleNumber,
-        name: products.name,
-        price: products.price,
-        discount: products.discount,
-        description: products.description,
-        imageUrls: products.imageUrls,
-        brand: brands.name,
-      })
-      .from(products)
-      .leftJoin(brands, eq(products.brandId, brands.brandId))
-      .where(eq(products.articleNumber, articleNumber))
-      .limit(1)
-      .then((result) => result[0]);
+    const product = await fetchOne(
+      db
+        .select({
+          articleNumber: products.articleNumber,
+          name: products.name,
+          price: products.price,
+          discount: products.discount,
+          description: products.description,
+          imageUrls: products.imageUrls,
+          brand: brands.name,
+        })
+        .from(products)
+        .leftJoin(brands, eq(products.brandId, brands.brandId))
+        .where(eq(products.articleNumber, articleNumber))
+        .limit(1)
+    );
 
     if (!product) {
-      return res.status(404).json({ error: "Продукт не знайдено" });
+      return next(createError(404, "Продукт не знайдено"));
     }
 
     const sizes = await db
@@ -417,20 +439,17 @@ app.get("/product/:articleNumber", async (req, res) => {
     res.json({ ...product, sizes });
   } catch (error) {
     console.error("Error fetching product by articleNumber:", error);
-    res.status(500).json({ error: "Не вдалося отримати дані продукту" });
+    next(createError(500, "Не вдалося отримати дані продукту"));
   }
 });
 
-app.get("/search", async (req, res) => {
+app.get("/search", async (req, res, next) => {
   try {
     const { q } = req.query;
     if (!q || typeof q !== "string") {
-      return res
-        .status(400)
-        .json({ error: "Будь ласка, вкажіть параметр пошуку (q)" });
+      return next(createError(400, "Будь ласка, вкажіть параметр пошуку (q)"));
     }
 
-    // Використовуємо ilike для нечутливого до регістру пошуку
     const productsList = await db
       .select({
         articleNumber: products.articleNumber,
@@ -445,7 +464,6 @@ app.get("/search", async (req, res) => {
       .leftJoin(brands, eq(products.brandId, brands.brandId))
       .where(ilike(products.name, `%${q}%`));
 
-    // Отримуємо розміри для кожного товару
     const productsWithSizes = await Promise.all(
       productsList.map(async (product) => {
         const sizes = await db
@@ -462,13 +480,13 @@ app.get("/search", async (req, res) => {
     res.json(productsWithSizes);
   } catch (error) {
     console.error("Помилка при пошуку товарів:", error);
-    res.status(500).json({ error: "Внутрішня помилка сервера" });
+    next(createError(500, "Внутрішня помилка сервера"));
   }
 });
 
 //-------------------------------------------------------CATEGORIES----------------------------------------------------------------------
 
-app.get("/categories", async (req, res) => {
+app.get("/categories", async (req, res, next) => {
   try {
     const allCategories = await db
       .select({
@@ -481,35 +499,33 @@ app.get("/categories", async (req, res) => {
     res.json(allCategories);
   } catch (error) {
     console.error("Error fetching categories:", error);
-    res.status(500).json({ error: "Failed to fetch categories" });
+    next(createError(500, "Failed to fetch categories"));
   }
 });
 
-app.post("/categories", async (req, res) => {
+app.post("/categories", async (req, res, next) => {
   try {
     const { name, imageUrl } = req.body;
 
     if (!name) {
-      return res.status(400).json({ error: "Поле назви є обов'язкове" });
+      return next(createError(400, "Поле назви є обов'язкове"));
     }
 
     const [newCategory] = await db
       .insert(categories)
-      .values({
-        name,
-        imageUrl,
-      })
+      .values({ name, imageUrl })
       .returning();
 
     res.status(201).json(newCategory);
   } catch (error) {
     console.error("Error adding category:", error);
-    res.status(500).json({ error: "Error adding category" });
+    next(createError(500, "Error adding category"));
   }
 });
-//-------------------------------------------------------BRANDS--------------------------------------------------------------------------
 
-app.get("/brands", async (req, res) => {
+//-------------------------------------------------------BRANDS----------------------------------------------------------------------
+
+app.get("/brands", async (req, res, next) => {
   try {
     const allBrands = await db
       .select({
@@ -521,60 +537,54 @@ app.get("/brands", async (req, res) => {
     res.json(allBrands);
   } catch (error) {
     console.error("Error fetching brands:", error);
-    res.status(500).json({ error: "Failed to fetch brands" });
+    next(createError(500, "Failed to fetch brands"));
   }
 });
 
-app.post("/brands", async (req, res) => {
+app.post("/brands", async (req, res, next) => {
   try {
     const { name } = req.body;
 
     if (!name) {
-      return res.status(400).json({ error: "Поле назви є обов'язкове" });
+      return next(createError(400, "Поле назви є обов'язкове"));
     }
 
-    const [newBrand] = await db
-      .insert(brands)
-      .values({
-        name,
-      })
-      .returning();
+    const [newBrand] = await db.insert(brands).values({ name }).returning();
 
     res.status(201).json(newBrand);
   } catch (error) {
     console.error("Error adding brand:", error);
-    res.status(500).json({ error: "Error adding brand" });
+    next(createError(500, "Error adding brand"));
   }
 });
 
-app.get("/brand/:brandId", async (req, res) => {
+app.get("/brand/:brandId", async (req, res, next) => {
   try {
     const { brandId } = req.params;
-
-    const brand = await db
-      .select({
-        name: brands.name,
-      })
-      .from(brands)
-      .where(eq(brands.brandId, Number(brandId)))
-      .limit(1)
-      .then((result) => result[0]);
+    const brand = await fetchOne(
+      db
+        .select({ name: brands.name })
+        .from(brands)
+        .where(eq(brands.brandId, Number(brandId)))
+        .limit(1)
+    );
 
     if (!brand) {
-      return res.status(404).json({ error: "Бренд не знайдено" });
+      return next(createError(404, "Бренд не знайдено"));
     }
 
     res.json({ brand });
   } catch (error) {
     console.error("Помилка отримання бренду за brandId:", error);
-    res.status(500).json({ error: "Не вдалося отримати дані бренду" });
+    next(createError(500, "Не вдалося отримати дані бренду"));
   }
 });
 
-//-------------------------------------------------------ORDERS--------------------------------------------------------------------------
-app.get("/orders", authenticate, async (req, res) => {
+//-------------------------------------------------------ORDERS----------------------------------------------------------------------
+
+app.get("/orders", authenticate, async (req, res, next) => {
   try {
-    const { userId } = req.user; // Тепер req.user гарантовано існує
+    const { userId } = req.user;
     const userOrders = await db
       .select({
         orderId: orders.orderId,
@@ -588,33 +598,30 @@ app.get("/orders", authenticate, async (req, res) => {
     res.json(userOrders);
   } catch (error) {
     console.error("Error fetching orders:", error);
-    res.status(500).json({ error: "Failed to fetch orders" });
+    next(createError(500, "Failed to fetch orders"));
   }
 });
 
-app.post("/orders", authenticate, async (req, res) => {
+app.post("/orders", authenticate, async (req, res, next) => {
   try {
     const { orderStatusId, cartData } = req.body;
     const { userId } = req.user;
 
     const [newOrder] = await db
       .insert(orders)
-      .values({
-        userId,
-        orderStatusId,
-        cartData,
-      })
+      .values({ userId, orderStatusId, cartData })
       .returning();
 
     res.status(201).json(newOrder);
   } catch (error) {
     console.error("Error adding order:", error);
-    res.status(500).json({ error: "Error adding order" });
+    next(createError(500, "Error adding order"));
   }
 });
 
-//---------------------------------------------------ORDER-ITEMS-------------------------------------------------------------------------// Отримання позицій замовлень для поточного користувача
-app.get("/order-items", authenticate, async (req, res) => {
+//-------------------------------------------------------ORDER-ITEMS----------------------------------------------------------------------
+
+app.get("/order-items", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
     const userOrderItems = await db
@@ -632,43 +639,42 @@ app.get("/order-items", authenticate, async (req, res) => {
     res.json(userOrderItems);
   } catch (error) {
     console.error("Error fetching order items:", error);
-    res.status(500).json({ error: "Failed to fetch order items" });
+    next(createError(500, "Failed to fetch order items"));
   }
 });
 
-// Додавання позиції замовлення
-app.post("/order-items", authenticate, async (req, res) => {
+app.post("/order-items", authenticate, async (req, res, next) => {
   try {
     const { articleNumber, size, quantity } = req.body;
     const { userId } = req.user;
 
     if (!articleNumber || !size || quantity === undefined) {
-      return res.status(400).json({
-        error: "articleNumber, size and quantity are required",
-      });
+      return next(
+        createError(400, "articleNumber, size and quantity are required")
+      );
     }
 
     // Знаходимо активне замовлення для користувача
-    let currentOrder = await db
-      .select("orderId")
-      .from(orders)
-      .where(eq(orders.userId, userId))
-      .where(eq(orders.orderStatusId, 1)) // Припускаємо, що 1 – статус активного замовлення
-      .limit(1)
-      .then((result) => result[0]);
+    let currentOrder = await fetchOne(
+      db
+        .select("orderId")
+        .from(orders)
+        .where(eq(orders.userId, userId))
+        .where(eq(orders.orderStatusId, 1))
+        .limit(1)
+    );
 
     if (!currentOrder) {
-      // Якщо активного замовлення немає, створюємо нове
-      const newOrder = await db
-        .insert(orders)
-        .values({
-          userId,
-          orderStatusId: 1,
-          cartData: [],
-        })
-        .returning("orderId")
-        .then((result) => result[0]);
-
+      const newOrder = await fetchOne(
+        db
+          .insert(orders)
+          .values({
+            userId,
+            orderStatusId: 1,
+            cartData: [],
+          })
+          .returning("orderId")
+      );
       currentOrder = newOrder;
     }
 
@@ -686,42 +692,37 @@ app.post("/order-items", authenticate, async (req, res) => {
     res.status(201).json(newOrderItem[0]);
   } catch (error) {
     console.error("Error adding order item:", error);
-    res.status(500).json({ error: "Error adding item to cart" });
+    next(createError(500, "Error adding item to cart"));
   }
 });
 
-// Оновлення позиції замовлення
-app.put("/order-items/:id", authenticate, async (req, res) => {
+app.put("/order-items/:id", authenticate, async (req, res, next) => {
   try {
     const { id } = req.params;
     const { size, quantity } = req.body;
     if (!size || !quantity) {
-      return res
-        .status(400)
-        .json({ error: "Поля size та quantity є обов'язковими" });
+      return next(createError(400, "Поля size та quantity є обов'язковими"));
     }
     const { userId } = req.user;
 
-    // Знаходимо позицію замовлення за id
-    const orderItemData = await db
-      .select()
-      .from(orderItems)
-      .where(eq(orderItems.productOrderId, Number(id)))
-      .then((result) => result[0]);
+    const orderItemData = await fetchOne(
+      db
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.productOrderId, Number(id)))
+        .limit(1)
+    );
 
     if (!orderItemData) {
-      return res.status(404).json({ error: "Позицію замовлення не знайдено" });
+      return next(createError(404, "Позицію замовлення не знайдено"));
     }
 
-    // Перевіряємо, чи належить позиція замовлення поточному користувачу
-    const orderData = await db
-      .select()
-      .from(orders)
-      .where(eq(orders.orderId, orderItemData.orderId))
-      .then((result) => result[0]);
+    const orderData = await fetchOne(
+      db.select().from(orders).where(eq(orders.orderId, orderItemData.orderId))
+    );
 
     if (!orderData || orderData.userId !== userId) {
-      return res.status(403).json({ error: "Неавторизована дія" });
+      return next(createError(403, "Неавторизована дія"));
     }
 
     const updatedOrderItems = await db
@@ -733,36 +734,33 @@ app.put("/order-items/:id", authenticate, async (req, res) => {
     res.json(updatedOrderItems[0]);
   } catch (error) {
     console.error("Error updating order item:", error);
-    res.status(500).json({ error: "Error updating order item" });
+    next(createError(500, "Error updating order item"));
   }
 });
 
-// Видалення позиції замовлення
-app.delete("/order-items/:id", authenticate, async (req, res) => {
+app.delete("/order-items/:id", authenticate, async (req, res, next) => {
   try {
     const { id } = req.params;
     const { userId } = req.user;
 
-    // Знаходимо позицію замовлення
-    const orderItemData = await db
-      .select()
-      .from(orderItems)
-      .where(eq(orderItems.productOrderId, Number(id)))
-      .then((result) => result[0]);
+    const orderItemData = await fetchOne(
+      db
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.productOrderId, Number(id)))
+        .limit(1)
+    );
 
     if (!orderItemData) {
-      return res.status(404).json({ error: "Позицію замовлення не знайдено" });
+      return next(createError(404, "Позицію замовлення не знайдено"));
     }
 
-    // Перевіряємо, чи належить замовлення користувачу
-    const orderData = await db
-      .select()
-      .from(orders)
-      .where(eq(orders.orderId, orderItemData.orderId))
-      .then((result) => result[0]);
+    const orderData = await fetchOne(
+      db.select().from(orders).where(eq(orders.orderId, orderItemData.orderId))
+    );
 
     if (!orderData || orderData.userId !== userId) {
-      return res.status(403).json({ error: "Неавторизована дія" });
+      return next(createError(403, "Неавторизована дія"));
     }
 
     const deletedItems = await db
@@ -773,33 +771,32 @@ app.delete("/order-items/:id", authenticate, async (req, res) => {
     res.json(deletedItems[0]);
   } catch (error) {
     console.error("Помилка видалення позиції замовлення:", error);
-    res.status(500).json({ error: "Не вдалося видалити позицію замовлення" });
+    next(createError(500, "Не вдалося видалити позицію замовлення"));
   }
 });
 
-//-------------------------------------------------------FAVORITES-----------------------------------------------------------------------
-// Додавання товару в улюблені
-app.post("/favorites", authenticate, async (req, res) => {
+//-------------------------------------------------------FAVORITES----------------------------------------------------------------------
+
+app.post("/favorites", authenticate, async (req, res, next) => {
   try {
     const { articleNumber } = req.body;
     const { userId } = req.user;
 
     if (!articleNumber) {
-      return res
-        .status(400)
-        .json({ error: "Поле articleNumber є обов'язковим" });
+      return next(createError(400, "Поле articleNumber є обов'язковим"));
     }
 
-    const existingFavorite = await db
-      .select()
-      .from(favorites)
-      .where(eq(favorites.userId, userId))
-      .where(eq(favorites.articleNumber, articleNumber))
-      .limit(1)
-      .then((res) => res[0]);
+    const existingFavorite = await fetchOne(
+      db
+        .select()
+        .from(favorites)
+        .where(eq(favorites.userId, userId))
+        .where(eq(favorites.articleNumber, articleNumber))
+        .limit(1)
+    );
 
     if (existingFavorite) {
-      return res.status(400).json({ error: "Цей товар вже в улюблених" });
+      return next(createError(400, "Цей товар вже в улюблених"));
     }
 
     const newFavorite = await db
@@ -814,15 +811,13 @@ app.post("/favorites", authenticate, async (req, res) => {
     res.status(201).json(newFavorite[0]);
   } catch (error) {
     console.error("Помилка додавання в улюблені:", error);
-    res.status(500).json({ error: "Сталася внутрішня помилка сервера" });
+    next(createError(500, "Сталася внутрішня помилка сервера"));
   }
 });
 
-// Отримання улюблених товарів користувача
-app.get("/favorites", authenticate, async (req, res) => {
+app.get("/favorites", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
-
     const userFavorites = await db
       .select({
         articleNumber: favorites.articleNumber,
@@ -831,26 +826,22 @@ app.get("/favorites", authenticate, async (req, res) => {
       .from(favorites)
       .where(eq(favorites.userId, userId));
 
-    if (userFavorites.length === 0) {
-      return res.json([]);
-    }
-
     // Отримання даних про кожен товар
     const favoriteProducts = await Promise.all(
       userFavorites.map(async (favorite) => {
-        const product = await db
-          .select({
-            articleNumber: products.articleNumber,
-            name: products.name,
-            price: products.price,
-            discount: products.discount,
-            imageUrls: products.imageUrls,
-          })
-          .from(products)
-          .where(eq(products.articleNumber, favorite.articleNumber))
-          .limit(1)
-          .then((res) => res[0]);
-
+        const product = await fetchOne(
+          db
+            .select({
+              articleNumber: products.articleNumber,
+              name: products.name,
+              price: products.price,
+              discount: products.discount,
+              imageUrls: products.imageUrls,
+            })
+            .from(products)
+            .where(eq(products.articleNumber, favorite.articleNumber))
+            .limit(1)
+        );
         return product ? { ...product, createdAt: favorite.createdAt } : null;
       })
     );
@@ -858,71 +849,73 @@ app.get("/favorites", authenticate, async (req, res) => {
     res.json(favoriteProducts.filter(Boolean));
   } catch (error) {
     console.error("Помилка отримання улюблених товарів:", error);
-    res.status(500).json({ error: "Не вдалося отримати улюблені товари" });
+    next(createError(500, "Не вдалося отримати улюблені товари"));
   }
 });
 
-// Перевірка, чи товар є в улюблених
-app.get("/favorites/:articleNumber", authenticate, async (req, res) => {
+app.get("/favorites/:articleNumber", authenticate, async (req, res, next) => {
   try {
     const { articleNumber } = req.params;
     const { userId } = req.user;
 
     if (!articleNumber) {
-      return res
-        .status(400)
-        .json({ error: "Поле articleNumber є обов'язковим" });
+      return next(createError(400, "Поле articleNumber є обов'язковим"));
     }
 
-    const existingFavorite = await db
-      .select()
-      .from(favorites)
-      .where(eq(favorites.userId, userId))
-      .where(eq(favorites.articleNumber, articleNumber))
-      .limit(1)
-      .then((result) => result[0]);
+    const existingFavorite = await fetchOne(
+      db
+        .select()
+        .from(favorites)
+        .where(eq(favorites.userId, userId))
+        .where(eq(favorites.articleNumber, articleNumber))
+        .limit(1)
+    );
 
     res.json({ isFavorite: !!existingFavorite });
   } catch (error) {
     console.error("Помилка перевірки улюбленого товару:", error);
-    res.status(500).json({
-      error:
-        "Сталася внутрішня помилка сервера при перевірці улюбленого товару",
-    });
+    next(
+      createError(
+        500,
+        "Сталася внутрішня помилка сервера при перевірці улюбленого товару"
+      )
+    );
   }
 });
 
-// Видалення товару з улюблених
-app.delete("/favorites/:articleNumber", authenticate, async (req, res) => {
-  try {
-    const { articleNumber } = req.params;
-    const { userId } = req.user;
+app.delete(
+  "/favorites/:articleNumber",
+  authenticate,
+  async (req, res, next) => {
+    try {
+      const { articleNumber } = req.params;
+      const { userId } = req.user;
 
-    const deletedFavorite = await db
-      .delete(favorites)
-      .where(eq(favorites.userId, userId))
-      .where(eq(favorites.articleNumber, articleNumber))
-      .returning();
+      const deletedFavorite = await db
+        .delete(favorites)
+        .where(eq(favorites.userId, userId))
+        .where(eq(favorites.articleNumber, articleNumber))
+        .returning();
 
-    if (!deletedFavorite || deletedFavorite.length === 0) {
-      return res
-        .status(404)
-        .json({ error: "Товар не знайдено у ваших улюблених" });
+      if (!deletedFavorite || deletedFavorite.length === 0) {
+        return next(createError(404, "Товар не знайдено у ваших улюблених"));
+      }
+
+      res.json({ message: "Товар успішно видалено з улюблених" });
+    } catch (error) {
+      console.error("Помилка видалення товару з улюблених:", error);
+      next(
+        createError(
+          500,
+          "Сталася внутрішня помилка сервера при видаленні товару з улюблених"
+        )
+      );
     }
-
-    res.json({ message: "Товар успішно видалено з улюблених" });
-  } catch (error) {
-    console.error("Помилка видалення товару з улюблених:", error);
-    res.status(500).json({
-      error:
-        "Сталася внутрішня помилка сервера при видаленні товару з улюблених",
-    });
   }
-});
+);
 
-//---------------------------------------------------REVIEWS------------------------------------------------------------------------------
+//-------------------------------------------------------REVIEWS----------------------------------------------------------------------
 
-// Створення відгуку
 app.post("/reviews", authenticate, async (req, res, next) => {
   try {
     const { articleNumber, rating, comment } = req.body;
@@ -933,17 +926,18 @@ app.post("/reviews", authenticate, async (req, res, next) => {
     }
 
     // Перевірка, чи користувач вже залишив відгук для цього товару
-    const existingUserReview = await db
-      .select()
-      .from(reviews)
-      .where(
-        and(
-          eq(reviews.articleNumber, articleNumber),
-          eq(reviews.userId, req.user.userId)
+    const existingUserReview = await fetchOne(
+      db
+        .select()
+        .from(reviews)
+        .where(
+          and(
+            eq(reviews.articleNumber, articleNumber),
+            eq(reviews.userId, req.user.userId)
+          )
         )
-      )
-      .limit(1)
-      .then((results) => results[0]);
+        .limit(1)
+    );
 
     if (existingUserReview) {
       return next(createError(400, "Ви вже залишили відгук для цього товару"));
@@ -969,7 +963,6 @@ app.post("/reviews", authenticate, async (req, res, next) => {
   }
 });
 
-// Отримання відгуків для заданого товару
 app.get("/reviews/:articleNumber", async (req, res, next) => {
   try {
     const { articleNumber } = req.params;
@@ -995,7 +988,6 @@ app.get("/reviews/:articleNumber", async (req, res, next) => {
   }
 });
 
-// Редагування відгуку (тільки власника)
 app.put("/reviews/:reviewId", authenticate, async (req, res, next) => {
   try {
     const { reviewId } = req.params;
@@ -1006,13 +998,13 @@ app.put("/reviews/:reviewId", authenticate, async (req, res, next) => {
       );
     }
 
-    // Отримуємо існуючий відгук
-    const existingReview = await db
-      .select()
-      .from(reviews)
-      .where(eq(reviews.reviewId, Number(reviewId)))
-      .limit(1)
-      .then((results) => results[0]);
+    const existingReview = await fetchOne(
+      db
+        .select()
+        .from(reviews)
+        .where(eq(reviews.reviewId, Number(reviewId)))
+        .limit(1)
+    );
 
     if (!existingReview) {
       return next(createError(404, "Відгук не знайдено"));
@@ -1022,7 +1014,6 @@ app.put("/reviews/:reviewId", authenticate, async (req, res, next) => {
       return next(createError(403, "Ви не маєте прав редагувати цей відгук"));
     }
 
-    // Перевірка, чи відгук редагується протягом 10 хвилин від публікації
     const reviewTimestamp = new Date(existingReview.reviewDate).getTime();
     const nowTimestamp = Date.now();
     if (nowTimestamp - reviewTimestamp > 10 * 60 * 1000) {
@@ -1041,18 +1032,18 @@ app.put("/reviews/:reviewId", authenticate, async (req, res, next) => {
     next(error);
   }
 });
-// Видалення відгуку (тільки власника)
+
 app.delete("/reviews/:reviewId", authenticate, async (req, res, next) => {
   try {
     const { reviewId } = req.params;
 
-    // Отримуємо існуючий відгук
-    const existingReview = await db
-      .select()
-      .from(reviews)
-      .where(eq(reviews.reviewId, Number(reviewId)))
-      .limit(1)
-      .then((results) => results[0]);
+    const existingReview = await fetchOne(
+      db
+        .select()
+        .from(reviews)
+        .where(eq(reviews.reviewId, Number(reviewId)))
+        .limit(1)
+    );
 
     if (!existingReview) {
       return next(createError(404, "Відгук не знайдено"));
@@ -1077,7 +1068,6 @@ app.delete("/reviews/:reviewId", authenticate, async (req, res, next) => {
 //---------------------------------------------------------------------------------------------------------------------------------------
 
 app.use((err, req, res, next) => {
-  // Лог помилки можна доповнити записом в систему моніторингу
   console.error(err);
   res.status(err.status || 500).json({
     error: err.message || "Сталася внутрішня помилка сервера",
