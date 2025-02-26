@@ -5,15 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1739357275934,
-      "tag": "0000_loose_sentinel",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1739958946145,
-      "tag": "0001_clumsy_the_stranger",
+      "when": 1740574499218,
+      "tag": "0000_closed_warbird",
       "breakpoints": true
     }
   ]

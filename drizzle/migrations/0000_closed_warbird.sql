@@ -12,8 +12,7 @@ CREATE TABLE "categories" (
 CREATE TABLE "favorites" (
 	"favoriteId" serial PRIMARY KEY NOT NULL,
 	"userId" integer NOT NULL,
-	"articleNumber" text NOT NULL,
-	"createdAt" text NOT NULL
+	"articleNumber" text NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "orderItems" (
@@ -32,8 +31,7 @@ CREATE TABLE "orderStatus" (
 CREATE TABLE "orders" (
 	"orderId" serial PRIMARY KEY NOT NULL,
 	"userId" integer,
-	"orderStatusId" integer,
-	"cartData" jsonb
+	"orderStatusId" integer
 );
 --> statement-breakpoint
 CREATE TABLE "productCategories" (
@@ -57,7 +55,8 @@ CREATE TABLE "products" (
 	"discount" integer,
 	"name" text,
 	"description" text,
-	"imageUrl" text[]
+	"imageUrl" text[],
+	"isActive" boolean DEFAULT true NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "reviews" (
@@ -71,7 +70,7 @@ CREATE TABLE "reviews" (
 --> statement-breakpoint
 CREATE TABLE "roles" (
 	"roleId" serial PRIMARY KEY NOT NULL,
-	"name" text
+	"name" text NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE "users" (
@@ -80,6 +79,8 @@ CREATE TABLE "users" (
 	"name" text NOT NULL,
 	"email" text NOT NULL,
 	"password" text NOT NULL,
+	"telephone" text,
+	"deliveryAddress" text,
 	CONSTRAINT "users_email_unique" UNIQUE("email")
 );
 --> statement-breakpoint

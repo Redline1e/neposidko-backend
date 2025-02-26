@@ -3,14 +3,13 @@ import {
   serial,
   text,
   integer,
-  foreignKey,
-  jsonb,
+  boolean,
 } from "drizzle-orm/pg-core";
 
 // Roles table
 export const roles = pgTable("roles", {
   roleId: serial("roleId").primaryKey(),
-  name: text("name"),
+  name: text("name").notNull(),
 });
 
 // Users table
@@ -42,7 +41,7 @@ export const orders = pgTable("orders", {
     () => orderStatus.orderStatusId,
     { onDelete: "set null" }
   ),
-  cartData: jsonb("cartData"),
+
 });
 
 // Brands table
@@ -62,6 +61,9 @@ export const products = pgTable("products", {
   name: text("name"),
   description: text("description"),
   imageUrls: text("imageUrl").array(),
+  isActive: boolean("isActive")
+    .default(true)
+    .notNull(), 
 });
 
 // ProductSizes table (новий підхід для збереження розмірів)
@@ -70,8 +72,8 @@ export const productSizes = pgTable("productSizes", {
   articleNumber: text("articleNumber")
     .references(() => products.articleNumber, { onDelete: "cascade" })
     .notNull(),
-  size: text("size").notNull(), // Наприклад: "42", "43", "L", "M"
-  stock: integer("stock").notNull(), // Кількість у наявності
+  size: text("size").notNull(),
+  stock: integer("stock").notNull(),
 });
 
 // Reviews table
@@ -82,9 +84,7 @@ export const reviews = pgTable("reviews", {
   }),
   articleNumber: text("articleNumber").references(
     () => products.articleNumber,
-    {
-      onDelete: "cascade",
-    }
+    { onDelete: "cascade" }
   ),
   rating: integer("rating"),
   comment: text("comment"),
@@ -107,7 +107,7 @@ export const orderItems = pgTable("orderItems", {
   articleNumber: text("articleNumber")
     .references(() => products.articleNumber, { onDelete: "cascade" })
     .notNull(),
-  size: text("size").notNull(), // Розмір товару, який замовили
+  size: text("size").notNull(),
   quantity: integer("quantity").notNull(),
 });
 
@@ -117,9 +117,7 @@ export const productCategories = pgTable("productCategories", {
   imageUrl: text("imageUrl"),
   articleNumber: text("articleNumber").references(
     () => products.articleNumber,
-    {
-      onDelete: "cascade",
-    }
+    { onDelete: "cascade" }
   ),
   categoryId: integer("categoryId").references(() => categories.categoryId, {
     onDelete: "cascade",
@@ -135,5 +133,4 @@ export const favorites = pgTable("favorites", {
   articleNumber: text("articleNumber")
     .references(() => products.articleNumber, { onDelete: "cascade" })
     .notNull(),
-  createdAt: text("createdAt").notNull(),
 });

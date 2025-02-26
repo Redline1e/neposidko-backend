@@ -26,7 +26,7 @@ const app = express();
 app.use(
   cors({
     origin: "http://localhost:3000", // Frontend URL
-    methods: ["GET", "POST", "PUT", "DELETE"],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
@@ -297,8 +297,9 @@ app.get("/products", async (req, res, next) => {
         description: products.description,
         imageUrls: products.imageUrls,
         brand: brands.name,
-        category: categories.name, // Назва категорії
-        categoryId: categories.categoryId, // Ідентифікатор категорії
+        category: categories.name,
+        categoryId: categories.categoryId,
+        isActive: products.isActive,
       })
       .from(products)
       .leftJoin(brands, eq(products.brandId, brands.brandId))
@@ -363,7 +364,7 @@ app.post("/products", async (req, res, next) => {
       );
     }
 
-    // Вставка товару в таблицю products
+    // Вставка товару в таблицю products (додано isActive: true)
     const [newProduct] = await db
       .insert(products)
       .values({
@@ -374,6 +375,7 @@ app.post("/products", async (req, res, next) => {
         name,
         description,
         imageUrls,
+        isActive: true, // Додано: встановлюємо продукт як активний за замовчуванням
       })
       .returning();
 
@@ -401,6 +403,129 @@ app.post("/products", async (req, res, next) => {
   } catch (error) {
     console.error("Error adding product:", error);
     next(createError(500, "Error adding product"));
+  }
+});
+
+// Ендпоінт для отримання активних продуктів (isActive: true)
+app.get("/products/active", async (req, res, next) => {
+  try {
+    const activeProducts = await db
+      .select({
+        articleNumber: products.articleNumber,
+        name: products.name,
+        price: products.price,
+        discount: products.discount,
+        description: products.description,
+        imageUrls: products.imageUrls,
+        brand: brands.name,
+        category: categories.name, // Назва категорії
+        categoryId: categories.categoryId, // Ідентифікатор категорії
+      })
+      .from(products)
+      .where(eq(products.isActive, true)) // Фільтруємо лише активні продукти
+      .leftJoin(brands, eq(products.brandId, brands.brandId))
+      .leftJoin(
+        productCategories,
+        eq(products.articleNumber, productCategories.articleNumber)
+      )
+      .leftJoin(
+        categories,
+        eq(productCategories.categoryId, categories.categoryId)
+      );
+
+    // Додавання розмірів для кожного товару
+    const productsWithSizes = await Promise.all(
+      activeProducts.map(async (prod) => {
+        const sizes = await db
+          .select({
+            size: productSizes.size,
+            stock: productSizes.stock,
+          })
+          .from(productSizes)
+          .where(eq(productSizes.articleNumber, prod.articleNumber));
+        return { ...prod, sizes };
+      })
+    );
+
+    res.json(productsWithSizes);
+  } catch (error) {
+    console.error("Error fetching active products:", error);
+    next(createError(500, "Failed to fetch active products"));
+  }
+});
+
+// Ендпоінт для отримання неактивних продуктів (isActive: false)
+app.get("/products/inactive", async (req, res, next) => {
+  try {
+    const inactiveProducts = await db
+      .select({
+        articleNumber: products.articleNumber,
+        name: products.name,
+        price: products.price,
+        discount: products.discount,
+        description: products.description,
+        imageUrls: products.imageUrls,
+        brand: brands.name,
+        category: categories.name, // Назва категорії
+        categoryId: categories.categoryId, // Ідентифікатор категорії
+      })
+      .from(products)
+      .where(eq(products.isActive, false)) // Фільтруємо лише неактивні продукти
+      .leftJoin(brands, eq(products.brandId, brands.brandId))
+      .leftJoin(
+        productCategories,
+        eq(products.articleNumber, productCategories.articleNumber)
+      )
+      .leftJoin(
+        categories,
+        eq(productCategories.categoryId, categories.categoryId)
+      );
+
+    // Додавання розмірів для кожного товару
+    const productsWithSizes = await Promise.all(
+      inactiveProducts.map(async (prod) => {
+        const sizes = await db
+          .select({
+            size: productSizes.size,
+            stock: productSizes.stock,
+          })
+          .from(productSizes)
+          .where(eq(productSizes.articleNumber, prod.articleNumber));
+        return { ...prod, sizes };
+      })
+    );
+
+    res.json(productsWithSizes);
+  } catch (error) {
+    console.error("Error fetching inactive products:", error);
+    next(createError(500, "Failed to fetch inactive products"));
+  }
+});
+
+// Ендпоінт для зміни параметра isActive продукту
+app.patch("/product/:articleNumber/active", async (req, res, next) => {
+  try {
+    const { articleNumber } = req.params;
+    const { isActive } = req.body;
+
+    if (typeof isActive !== "boolean") {
+      return next(createError(400, "Поле isActive має бути булевим значенням"));
+    }
+
+    const [updatedProduct] = await db
+      .update(products)
+      .set({ isActive })
+      .where(eq(products.articleNumber, articleNumber))
+      .returning();
+
+    if (!updatedProduct) {
+      return next(createError(404, "Продукт не знайдено"));
+    }
+
+    res.json(updatedProduct);
+  } catch (error) {
+    console.error("Error updating product isActive:", error);
+    next(createError(500, "Не вдалося оновити статус продукту"));
   }
 });
 
@@ -442,6 +567,97 @@ app.get("/product/:articleNumber", async (req, res, next) => {
     next(createError(500, "Не вдалося отримати дані продукту"));
   }
 });
+app.put("/product/:articleNumber", async (req, res, next) => {
+  try {
+    const { articleNumber } = req.params;
+    const {
+      brandId,
+      price,
+      discount,
+      name,
+      description,
+      imageUrls,
+      sizes,
+      categoryId,
+    } = req.body;
+
+    // Оновлення запису в таблиці products
+    const [updatedProduct] = await db
+      .update(products)
+      .set({
+        brandId,
+        price,
+        discount: discount || 0,
+        name,
+        description,
+        imageUrls,
+      })
+      .where(eq(products.articleNumber, articleNumber))
+      .returning();
+
+    if (!updatedProduct) {
+      return next(createError(404, "Продукт не знайдено"));
+    }
+
+    // Оновлення зв'язку з категорією (якщо categoryId передано)
+    if (categoryId) {
+      // Видаляємо попередній запис для цього товару
+      await db
+        .delete(productCategories)
+        .where(eq(productCategories.articleNumber, articleNumber));
+      // Вставляємо новий запис
+      await db.insert(productCategories).values({
+        articleNumber,
+        categoryId,
+        imageUrl: imageUrls[0], // або інше бажане значення
+      });
+    }
+
+    // Оновлення розмірів:
+    if (sizes && Array.isArray(sizes)) {
+      // Видаляємо всі існуючі розміри для цього товару
+      await db
+        .delete(productSizes)
+        .where(eq(productSizes.articleNumber, articleNumber));
+      // Вставляємо нові записи
+      for (const sizeObj of sizes) {
+        const { size, stock } = sizeObj;
+        if (!size || stock == null) continue;
+        await db.insert(productSizes).values({
+          articleNumber,
+          size,
+          stock,
+        });
+      }
+    }
+
+    res.json(updatedProduct);
+  } catch (error) {
+    console.error("Error updating product:", error);
+    next(createError(500, "Не вдалося оновити продукт"));
+  }
+});
+
+app.delete("/product/:articleNumber", async (req, res, next) => {
+  try {
+    const { articleNumber } = req.params;
+
+    // Видаляємо продукт; завдяки налаштуванням каскадного видалення, пов'язані записи у productSizes та productCategories видаляться автоматично
+    const deleted = await db
+      .delete(products)
+      .where(eq(products.articleNumber, articleNumber))
+      .returning();
+
+    if (deleted.length === 0) {
+      return next(createError(404, "Продукт не знайдено"));
+    }
+
+    res.json({ message: "Продукт успішно видалено" });
+  } catch (error) {
+    console.error("Error deleting product:", error);
+    next(createError(500, "Не вдалося видалити продукт"));
+  }
+});
 
 app.get("/search", async (req, res, next) => {
   try {
@@ -462,7 +678,10 @@ app.get("/search", async (req, res, next) => {
       })
       .from(products)
       .leftJoin(brands, eq(products.brandId, brands.brandId))
-      .where(ilike(products.name, `%${q}%`));
+      .where(
+        // Пошук за назвою і фільтрація лише активних товарів
+        and(ilike(products.name, `%${q}%`), eq(products.isActive, true))
+      );
 
     const productsWithSizes = await Promise.all(
       productsList.map(async (product) => {
@@ -523,6 +742,52 @@ app.post("/categories", async (req, res, next) => {
   }
 });
 
+app.put("/categories/:categoryId", async (req, res, next) => {
+  try {
+    const { categoryId } = req.params;
+    const { name, imageUrl } = req.body;
+
+    if (!name) {
+      return next(createError(400, "Поле назви категорії є обов'язковим"));
+    }
+
+    const [updatedCategory] = await db
+      .update(categories)
+      .set({ name, imageUrl })
+      .where(eq(categories.categoryId, Number(categoryId)))
+      .returning();
+
+    if (!updatedCategory) {
+      return next(createError(404, "Категорію не знайдено"));
+    }
+
+    res.json(updatedCategory);
+  } catch (error) {
+    console.error("Error updating category:", error);
+    next(createError(500, "Не вдалося оновити категорію"));
+  }
+});
+
+app.delete("/categories/:categoryId", async (req, res, next) => {
+  try {
+    const { categoryId } = req.params;
+
+    const deleted = await db
+      .delete(categories)
+      .where(eq(categories.categoryId, Number(categoryId)))
+      .returning();
+
+    if (deleted.length === 0) {
+      return next(createError(404, "Категорію не знайдено"));
+    }
+
+    res.json({ message: "Категорія успішно видалена" });
+  } catch (error) {
+    console.error("Error deleting category:", error);
+    next(createError(500, "Не вдалося видалити категорію"));
+  }
+});
+
 //-------------------------------------------------------BRANDS----------------------------------------------------------------------
 
 app.get("/brands", async (req, res, next) => {
@@ -580,6 +845,52 @@ app.get("/brand/:brandId", async (req, res, next) => {
   }
 });
 
+app.put("/brand/:brandId", async (req, res, next) => {
+  try {
+    const { brandId } = req.params;
+    const { name } = req.body;
+
+    if (!name) {
+      return next(createError(400, "Поле назви бренду є обов'язковим"));
+    }
+
+    const [updatedBrand] = await db
+      .update(brands)
+      .set({ name })
+      .where(eq(brands.brandId, Number(brandId)))
+      .returning();
+
+    if (!updatedBrand) {
+      return next(createError(404, "Бренд не знайдено"));
+    }
+
+    res.json(updatedBrand);
+  } catch (error) {
+    console.error("Error updating brand:", error);
+    next(createError(500, "Не вдалося оновити бренд"));
+  }
+});
+
+app.delete("/brand/:brandId", async (req, res, next) => {
+  try {
+    const { brandId } = req.params;
+
+    const deleted = await db
+      .delete(brands)
+      .where(eq(brands.brandId, Number(brandId)))
+      .returning();
+
+    if (deleted.length === 0) {
+      return next(createError(404, "Бренд не знайдено"));
+    }
+
+    res.json({ message: "Бренд успішно видалено" });
+  } catch (error) {
+    console.error("Error deleting brand:", error);
+    next(createError(500, "Не вдалося видалити бренд"));
+  }
+});
+
 //-------------------------------------------------------ORDERS----------------------------------------------------------------------
 
 app.get("/orders", authenticate, async (req, res, next) => {
@@ -590,7 +901,6 @@ app.get("/orders", authenticate, async (req, res, next) => {
         orderId: orders.orderId,
         userId: orders.userId,
         orderStatusId: orders.orderStatusId,
-        cartData: orders.cartData,
       })
       .from(orders)
       .where(eq(orders.userId, userId));
@@ -604,12 +914,12 @@ app.get("/orders", authenticate, async (req, res, next) => {
 
 app.post("/orders", authenticate, async (req, res, next) => {
   try {
-    const { orderStatusId, cartData } = req.body;
+    const { orderStatusId } = req.body;
     const { userId } = req.user;
 
     const [newOrder] = await db
       .insert(orders)
-      .values({ userId, orderStatusId, cartData })
+      .values({ userId, orderStatusId })
       .returning();
 
     res.status(201).json(newOrder);
@@ -671,7 +981,6 @@ app.post("/order-items", authenticate, async (req, res, next) => {
           .values({
             userId,
             orderStatusId: 1,
-            cartData: [],
           })
           .returning("orderId")
       );
@@ -804,7 +1113,6 @@ app.post("/favorites", authenticate, async (req, res, next) => {
       .values({
         userId,
         articleNumber,
-        createdAt: new Date().toISOString(),
       })
       .returning();
 
@@ -821,7 +1129,6 @@ app.get("/favorites", authenticate, async (req, res, next) => {
     const userFavorites = await db
       .select({
         articleNumber: favorites.articleNumber,
-        createdAt: favorites.createdAt,
       })
       .from(favorites)
       .where(eq(favorites.userId, userId));
@@ -842,7 +1149,7 @@ app.get("/favorites", authenticate, async (req, res, next) => {
             .where(eq(products.articleNumber, favorite.articleNumber))
             .limit(1)
         );
-        return product ? { ...product, createdAt: favorite.createdAt } : null;
+        return product ? { ...product } : null;
       })
     );
 
@@ -1062,6 +1369,20 @@ app.delete("/reviews/:reviewId", authenticate, async (req, res, next) => {
   } catch (error) {
     console.error("Помилка видалення відгуку:", error);
     next(error);
+  }
+});
+
+//-------------------------------------------------------SIZES----------------------------------------------------------------------
+app.get("/sizes", async (req, res, next) => {
+  try {
+    const sizes = await db
+      .select({ size: productSizes.size })
+      .from(productSizes)
+      .groupBy(productSizes.size);
+    res.json(sizes);
+  } catch (error) {
+    console.error("Error fetching sizes:", error);
+    next(createError(500, "Не вдалося отримати розміри"));
   }
 });
 

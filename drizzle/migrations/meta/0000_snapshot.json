@@ -1,5 +1,5 @@
 {
-  "id": "39c9b84f-dcb4-49e2-8164-2be0ae0cb63d",
+  "id": "33ef3c95-80d6-48dd-a518-e010df024dc3",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -78,12 +78,6 @@
         },
         "articleNumber": {
           "name": "articleNumber",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "createdAt": {
-          "name": "createdAt",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -238,12 +232,6 @@
         "orderStatusId": {
           "name": "orderStatusId",
           "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "cartData": {
-          "name": "cartData",
-          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         }
@@ -443,6 +431,13 @@
           "type": "text[]",
           "primaryKey": false,
           "notNull": false
+        },
+        "isActive": {
+          "name": "isActive",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
         }
       },
       "indexes": {},
@@ -557,7 +552,7 @@
           "name": "name",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         }
       },
       "indexes": {},
@@ -601,6 +596,18 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "telephone": {
+          "name": "telephone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deliveryAddress": {
+          "name": "deliveryAddress",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
