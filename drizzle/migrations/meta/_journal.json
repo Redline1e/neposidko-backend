@@ -8,6 +8,13 @@
       "when": 1740574499218,
       "tag": "0000_closed_warbird",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1741182149480,
+      "tag": "0001_crazy_stepford_cuckoos",
+      "breakpoints": true
     }
   ]
 }

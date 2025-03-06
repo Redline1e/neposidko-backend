@@ -4,6 +4,7 @@ import {
   text,
   integer,
   boolean,
+  timestamp,
 } from "drizzle-orm/pg-core";
 
 // Roles table
@@ -41,7 +42,7 @@ export const orders = pgTable("orders", {
     () => orderStatus.orderStatusId,
     { onDelete: "set null" }
   ),
-
+  orderDate: timestamp("orderDate").defaultNow().notNull(),
 });
 
 // Brands table
@@ -61,9 +62,7 @@ export const products = pgTable("products", {
   name: text("name"),
   description: text("description"),
   imageUrls: text("imageUrl").array(),
-  isActive: boolean("isActive")
-    .default(true)
-    .notNull(), 
+  isActive: boolean("isActive").default(true).notNull(),
 });
 
 // ProductSizes table (новий підхід для збереження розмірів)

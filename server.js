@@ -5,7 +5,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import createError from "http-errors";
 import { db } from "./db/index.js";
-import { eq, ilike, and } from "drizzle-orm";
+import { eq, ilike, and, or } from "drizzle-orm";
 import { authenticate } from "./middleware/auth.js";
 import {
   products,
@@ -297,6 +297,7 @@ app.get("/products", async (req, res, next) => {
         description: products.description,
         imageUrls: products.imageUrls,
         brand: brands.name,
+        brandId: products.brandId,
         category: categories.name,
         categoryId: categories.categoryId,
         isActive: products.isActive,
@@ -418,6 +419,7 @@ app.get("/products/active", async (req, res, next) => {
         description: products.description,
         imageUrls: products.imageUrls,
         brand: brands.name,
+        brandId: products.brandId,
         category: categories.name, // Назва категорії
         categoryId: categories.categoryId, // Ідентифікатор категорії
       })
@@ -542,6 +544,7 @@ app.get("/product/:articleNumber", async (req, res, next) => {
           description: products.description,
           imageUrls: products.imageUrls,
           brand: brands.name,
+          isActive: products.isActive, // переконайтеся, що це поле вибирається
         })
         .from(products)
         .leftJoin(brands, eq(products.brandId, brands.brandId))
@@ -549,7 +552,7 @@ app.get("/product/:articleNumber", async (req, res, next) => {
         .limit(1)
     );
 
-    if (!product) {
+    if (!product || !product.isActive) {
       return next(createError(404, "Продукт не знайдено"));
     }
 
@@ -567,6 +570,7 @@ app.get("/product/:articleNumber", async (req, res, next) => {
     next(createError(500, "Не вдалося отримати дані продукту"));
   }
 });
+
 app.put("/product/:articleNumber", async (req, res, next) => {
   try {
     const { articleNumber } = req.params;
@@ -679,8 +683,13 @@ app.get("/search", async (req, res, next) => {
       .from(products)
       .leftJoin(brands, eq(products.brandId, brands.brandId))
       .where(
-        // Пошук за назвою і фільтрація лише активних товарів
-        and(ilike(products.name, `%${q}%`), eq(products.isActive, true))
+        and(
+          or(
+            ilike(products.name, `%${q}%`),
+            ilike(products.articleNumber, `%${q}%`)
+          ),
+          eq(products.isActive, true)
+        )
       );
 
     const productsWithSizes = await Promise.all(
@@ -901,10 +910,10 @@ app.get("/orders", authenticate, async (req, res, next) => {
         orderId: orders.orderId,
         userId: orders.userId,
         orderStatusId: orders.orderStatusId,
+        orderDate: orders.orderDate,
       })
       .from(orders)
       .where(eq(orders.userId, userId));
-
     res.json(userOrders);
   } catch (error) {
     console.error("Error fetching orders:", error);
@@ -912,25 +921,42 @@ app.get("/orders", authenticate, async (req, res, next) => {
   }
 });
 
+// POST /orders – створення нового замовлення
 app.post("/orders", authenticate, async (req, res, next) => {
   try {
     const { orderStatusId } = req.body;
     const { userId } = req.user;
-
     const [newOrder] = await db
       .insert(orders)
       .values({ userId, orderStatusId })
       .returning();
-
     res.status(201).json(newOrder);
   } catch (error) {
     console.error("Error adding order:", error);
     next(createError(500, "Error adding order"));
   }
 });
+// GET /orders/all – отримання усіх замовлень незалежно від аккаунту
+app.get("/orders/all", async (req, res, next) => {
+  try {
+    const allOrders = await db
+      .select({
+        orderId: orders.orderId,
+        userId: orders.userId,
+        orderStatusId: orders.orderStatusId,
+        orderDate: orders.orderDate,
+      })
+      .from(orders);
+    res.json(allOrders);
+  } catch (error) {
+    console.error("Error fetching all orders:", error);
+    next(createError(500, "Не вдалося завантажити всі замовлення"));
+  }
+});
 
 //-------------------------------------------------------ORDER-ITEMS----------------------------------------------------------------------
 
+// GET /order-items – отримання позицій замовлення користувача
 app.get("/order-items", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
@@ -945,7 +971,6 @@ app.get("/order-items", authenticate, async (req, res, next) => {
       .from(orderItems)
       .innerJoin(orders, eq(orderItems.orderId, orders.orderId))
       .where(eq(orders.userId, userId));
-
     res.json(userOrderItems);
   } catch (error) {
     console.error("Error fetching order items:", error);
@@ -953,6 +978,7 @@ app.get("/order-items", authenticate, async (req, res, next) => {
   }
 });
 
+// POST /order-items – додавання позиції замовлення
 app.post("/order-items", authenticate, async (req, res, next) => {
   try {
     const { articleNumber, size, quantity } = req.body;
@@ -964,7 +990,7 @@ app.post("/order-items", authenticate, async (req, res, next) => {
       );
     }
 
-    // Знаходимо активне замовлення для користувача
+    // Знаходимо активне замовлення для користувача (orderStatusId = 1)
     let currentOrder = await fetchOne(
       db
         .select("orderId")
@@ -978,16 +1004,13 @@ app.post("/order-items", authenticate, async (req, res, next) => {
       const newOrder = await fetchOne(
         db
           .insert(orders)
-          .values({
-            userId,
-            orderStatusId: 1,
-          })
+          .values({ userId, orderStatusId: 1 })
           .returning("orderId")
       );
       currentOrder = newOrder;
     }
 
-    // Додаємо позицію до таблиці orderItems
+    // Додаємо позицію до замовлення
     const newOrderItem = await db
       .insert(orderItems)
       .values({
@@ -1005,6 +1028,7 @@ app.post("/order-items", authenticate, async (req, res, next) => {
   }
 });
 
+// PUT /order-items/:id – оновлення позиції замовлення
 app.put("/order-items/:id", authenticate, async (req, res, next) => {
   try {
     const { id } = req.params;
@@ -1047,6 +1071,7 @@ app.put("/order-items/:id", authenticate, async (req, res, next) => {
   }
 });
 
+// DELETE /order-items/:id – видалення позиції замовлення
 app.delete("/order-items/:id", authenticate, async (req, res, next) => {
   try {
     const { id } = req.params;
