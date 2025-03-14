@@ -8,9 +8,10 @@ import path from "path";
 import fs from "fs/promises";
 import multer from "multer";
 import { db } from "./db/index.js";
-import { eq, ilike, and, or } from "drizzle-orm";
+import { eq, ilike, and, or, lt } from "drizzle-orm";
 import { fileURLToPath } from "url";
 import { authenticate } from "./middleware/auth.js";
+import cron from "node-cron";
 import {
   products,
   users,
@@ -1039,6 +1040,38 @@ app.get("/orders/all", async (req, res, next) => {
     next(createError(500, "Не вдалося завантажити всі замовлення"));
   }
 });
+app.post("/order/checkout", async (req, res, next) => {
+  try {
+    const { orderId, deliveryAddress, telephone, paymentMethod } = req.body;
+
+    // Перевірка, чи передано orderId і чи є він числом
+    if (!orderId || isNaN(Number(orderId))) {
+      return next(createError(400, "orderId є обов'язковим і має бути числом"));
+    }
+
+    const orderIdNum = Number(orderId); // Перетворюємо в число
+
+    const updatedOrders = await db
+      .update("orders")
+      .set({
+        orderStatusId: 2, // Підтверджуємо замовлення
+        deliveryAddress: deliveryAddress || null,
+        telephone: telephone || null,
+        paymentMethod: paymentMethod || null,
+      })
+      .where(db.eq("orders.orderId", orderIdNum))
+      .returning();
+
+    if (!updatedOrders || updatedOrders.length === 0) {
+      return next(createError(404, "Замовлення не знайдено"));
+    }
+
+    res.json({ message: "Замовлення оформлено успішно" });
+  } catch (error) {
+    console.error("Помилка оформлення замовлення:", error);
+    next(createError(500, "Не вдалося оформити замовлення"));
+  }
+});
 
 //-------------------------------------------------------ORDER-ITEMS----------------------------------------------------------------------
 
@@ -1079,10 +1112,10 @@ app.post("/order-items", authenticate, async (req, res, next) => {
       );
     }
 
-    // Знаходимо активне замовлення для користувача (orderStatusId = 1)
+    // Знаходимо активний ордер (orderStatusId = 1)
     let currentOrder = await fetchOne(
       db
-        .select("orderId")
+        .select({ orderId: orders.orderId })
         .from(orders)
         .where(eq(orders.userId, userId))
         .where(eq(orders.orderStatusId, 1))
@@ -1090,16 +1123,23 @@ app.post("/order-items", authenticate, async (req, res, next) => {
     );
 
     if (!currentOrder) {
+      // Якщо немає активного ордера, створюємо новий
       const newOrder = await fetchOne(
         db
           .insert(orders)
-          .values({ userId, orderStatusId: 1 })
-          .returning("orderId")
+          .values({ userId, orderStatusId: 1, lastUpdated: new Date() })
+          .returning({ orderId: orders.orderId })
       );
       currentOrder = newOrder;
+    } else {
+      // Оновлюємо lastUpdated для існуючого ордера
+      await db
+        .update(orders)
+        .set({ lastUpdated: new Date() })
+        .where(eq(orders.orderId, currentOrder.orderId));
     }
 
-    // Додаємо позицію до замовлення
+    // Додаємо orderItem
     const newOrderItem = await db
       .insert(orderItems)
       .values({
@@ -1175,7 +1215,7 @@ app.delete("/order-items/:id", authenticate, async (req, res, next) => {
     );
 
     if (!orderItemData) {
-      return next(createError(404, "Позицію замовлення не знайдено"));
+      return next(createError(404, "Order item not found"));
     }
 
     const orderData = await fetchOne(
@@ -1183,18 +1223,35 @@ app.delete("/order-items/:id", authenticate, async (req, res, next) => {
     );
 
     if (!orderData || orderData.userId !== userId) {
-      return next(createError(403, "Неавторизована дія"));
+      return next(createError(403, "Unauthorized action"));
     }
 
-    const deletedItems = await db
+    // Видаляємо orderItem
+    await db
       .delete(orderItems)
-      .where(eq(orderItems.productOrderId, Number(id)))
-      .returning();
+      .where(eq(orderItems.productOrderId, Number(id)));
 
-    res.json(deletedItems[0]);
+    // Перевіряємо, чи залишилися orderItems
+    const remainingItems = await db
+      .select()
+      .from(orderItems)
+      .where(eq(orderItems.orderId, orderData.orderId));
+
+    if (remainingItems.length === 0) {
+      // Видаляємо ордер, якщо він порожній
+      await db.delete(orders).where(eq(orders.orderId, orderData.orderId));
+    } else {
+      // Оновлюємо lastUpdated, якщо ордер залишився
+      await db
+        .update(orders)
+        .set({ lastUpdated: new Date() })
+        .where(eq(orders.orderId, orderData.orderId));
+    }
+
+    res.json({ message: "Order item deleted successfully" });
   } catch (error) {
-    console.error("Помилка видалення позиції замовлення:", error);
-    next(createError(500, "Не вдалося видалити позицію замовлення"));
+    console.error("Error deleting order item:", error);
+    next(createError(500, "Error deleting order item"));
   }
 });
 
@@ -1502,6 +1559,23 @@ app.get("/sizes", async (req, res, next) => {
 
 //---------------------------------------------------------------------------------------------------------------------------------------
 
+// Додаємо в кінець файлу сервера
+cron.schedule("0 * * * *", async () => {
+  // Щогодини
+  try {
+    const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    await db.delete(orders).where(
+      and(
+        eq(orders.orderStatusId, 1), // Тільки кошики
+        lt(orders.lastUpdated, twentyFourHoursAgo)
+      )
+    );
+    console.log("Old orders cleaned up");
+  } catch (error) {
+    console.error("Error deleting old orders:", error);
+  }
+});
+
 app.use((err, req, res, next) => {
   console.error(err);
   res.status(err.status || 500).json({
@@ -1512,4 +1586,3 @@ app.use((err, req, res, next) => {
 app.listen(5000, () => {
   console.log("Server running on port 5000");
 });
-

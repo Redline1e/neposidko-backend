@@ -43,6 +43,11 @@ export const orders = pgTable("orders", {
     { onDelete: "set null" }
   ),
   orderDate: timestamp("orderDate").defaultNow().notNull(),
+  lastUpdated: timestamp("lastUpdated").defaultNow().notNull(),
+  // Нові необов'язкові параметри:
+  deliveryAddress: text("deliveryAddress"),
+  telephone: text("telephone"),
+  paymentMethod: text("paymentMethod"),
 });
 
 // Brands table

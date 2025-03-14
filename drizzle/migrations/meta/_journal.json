@@ -15,6 +15,20 @@
       "when": 1741182149480,
       "tag": "0001_crazy_stepford_cuckoos",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1741974880015,
+      "tag": "0002_empty_electro",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1741979039295,
+      "tag": "0003_nervous_makkari",
+      "breakpoints": true
     }
   ]
 }
