@@ -457,7 +457,54 @@ app.post("/products", upload.array("images"), async (req, res, next) => {
     next(createError(500, "Не вдалося додати продукт"));
   }
 });
+app.get("/products/active", async (req, res, next) => {
+  try {
+    const activeProducts = await db
+      .select({
+        articleNumber: products.articleNumber,
+        name: products.name,
+        price: products.price,
+        discount: products.discount,
+        description: products.description,
+        imageUrls: products.imageUrls,
+        brand: brands.name,
+        brandId: products.brandId,
+        category: categories.name,
+        categoryId: categories.categoryId,
+        isActive: products.isActive,
+      })
+      .from(products)
+      .where(eq(products.isActive, true)) // Фільтруємо лише активні товари
+      .leftJoin(brands, eq(products.brandId, brands.brandId))
+      .leftJoin(
+        productCategories,
+        eq(products.articleNumber, productCategories.articleNumber)
+      )
+      .leftJoin(
+        categories,
+        eq(productCategories.categoryId, categories.categoryId)
+      );
 
+    // Отримання розмірів для кожного товару
+    const productsWithSizes = await Promise.all(
+      activeProducts.map(async (prod) => {
+        const sizes = await db
+          .select({
+            size: productSizes.size,
+            stock: productSizes.stock,
+          })
+          .from(productSizes)
+          .where(eq(productSizes.articleNumber, prod.articleNumber));
+        return { ...prod, sizes };
+      })
+    );
+
+    res.json(productsWithSizes);
+  } catch (error) {
+    console.error("Error fetching active products:", error);
+    next(createError(500, "Failed to fetch active products"));
+  }
+});
 // Ендпоінт для отримання неактивних продуктів (isActive: false)
 app.get("/products/inactive", async (req, res, next) => {
   try {
@@ -1465,3 +1512,4 @@ app.use((err, req, res, next) => {
 app.listen(5000, () => {
   console.log("Server running on port 5000");
 });
+
