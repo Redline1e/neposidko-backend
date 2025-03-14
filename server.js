@@ -66,7 +66,6 @@ const upload = multer({
   },
 });
 
-// Допоміжна функція для видалення файлів
 const deleteFiles = async (filesOrUrls) => {
   const files = Array.isArray(filesOrUrls)
     ? filesOrUrls.map((file) => file.filename || path.basename(file))
@@ -258,8 +257,7 @@ app.delete("/user", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
     const deletedUser = await db
-      .delete()
-      .from(users)
+      .delete(users)
       .where(eq(users.userId, userId))
       .returning();
 
@@ -387,9 +385,10 @@ app.post("/products", upload.array("images"), async (req, res, next) => {
       description,
       sizes,
     } = req.body;
-    const files = req.files; // Отримуємо масив файлів
+    const files = req.files;
 
-    // Перевірка обов’язкових полів
+    console.log("Files received:", files); // Додано логування для дебагу
+
     if (
       !articleNumber ||
       !brandId ||
@@ -411,12 +410,10 @@ app.post("/products", upload.array("images"), async (req, res, next) => {
       );
     }
 
-    // Формуємо масив URL-адрес для зображень
     const imageUrls = files.map(
       (file) => `${req.protocol}://${req.get("host")}/images/${file.filename}`
     );
 
-    // Додавання продукту в базу даних
     const [newProduct] = await db
       .insert(products)
       .values({
@@ -431,7 +428,6 @@ app.post("/products", upload.array("images"), async (req, res, next) => {
       })
       .returning();
 
-    // Додавання категорії продукту
     const categoryImageUrl = imageUrls[0];
     await db.insert(productCategories).values({
       articleNumber,
@@ -439,7 +435,6 @@ app.post("/products", upload.array("images"), async (req, res, next) => {
       imageUrl: categoryImageUrl,
     });
 
-    // Додавання розмірів продукту
     const parsedSizes = sizes ? JSON.parse(sizes) : [];
     if (Array.isArray(parsedSizes)) {
       for (const sizeObj of parsedSizes) {
@@ -455,95 +450,10 @@ app.post("/products", upload.array("images"), async (req, res, next) => {
 
     res.status(201).json(newProduct);
   } catch (error) {
-    // Якщо сталася помилка, видаляємо всі завантажені файли
     if (req.files && Array.isArray(req.files)) {
-      const deletePromises = req.files.map((file) => {
-        const filePath = path.join(
-          __dirname,
-          "public",
-          "images",
-          file.filename
-        );
-        return fs.unlink(filePath).catch((err) => {
-          console.error(`Помилка видалення файлу ${filePath}:`, err);
-        });
-      });
-      await Promise.all(deletePromises);
+      await deleteFiles(req.files);
     }
     console.error("Error adding product:", error);
-    next(createError(500, "Error adding product"));
-  }
-});
-
-// Ендпоінт для отримання активних продуктів (isActive: true)
-app.post("/products", upload.array("images"), async (req, res, next) => {
-  try {
-    const {
-      articleNumber,
-      brandId,
-      categoryId,
-      price,
-      discount,
-      name,
-      description,
-      sizes,
-    } = req.body;
-    const files = req.files;
-
-    if (
-      !articleNumber ||
-      !brandId ||
-      !categoryId ||
-      !price ||
-      !name ||
-      !description
-    ) {
-      return next(createError(400, "Усі поля продукту обов'язкові"));
-    }
-    if (!files?.length) {
-      return next(
-        createError(400, "Потрібно завантажити хоча б одне зображення")
-      );
-    }
-
-    const imageUrls = files.map(
-      (file) => `${req.protocol}://${req.get("host")}/images/${file.filename}`
-    );
-
-    const [newProduct] = await db
-      .insert(products)
-      .values({
-        articleNumber,
-        brandId: Number(brandId),
-        price: Number(price),
-        discount: discount ? Number(discount) : 0,
-        name,
-        description,
-        imageUrls,
-        isActive: true,
-      })
-      .returning();
-
-    await db.insert(productCategories).values({
-      articleNumber,
-      categoryId: Number(categoryId),
-      imageUrl: imageUrls[0],
-    });
-
-    const parsedSizes = sizes ? JSON.parse(sizes) : [];
-    if (Array.isArray(parsedSizes)) {
-      for (const { size, stock } of parsedSizes) {
-        if (!size || stock == null) continue;
-        await db
-          .insert(productSizes)
-          .values({ articleNumber, size, stock: Number(stock) });
-      }
-    }
-
-    res.status(201).json(newProduct);
-  } catch (error) {
-    if (req.files?.length) await deleteFiles(req.files);
-    console.error("Помилка додавання продукту:", error);
     next(createError(500, "Не вдалося додати продукт"));
   }
 });
@@ -663,76 +573,71 @@ app.get("/product/:articleNumber", async (req, res, next) => {
   }
 });
 
-app.put("/product/:articleNumber", async (req, res, next) => {
-  try {
-    const { articleNumber } = req.params;
-    const {
-      brandId,
-      price,
-      discount,
-      name,
-      description,
-      imageUrls,
-      sizes,
-      categoryId,
-    } = req.body;
+app.put(
+  "/product/:articleNumber",
+  upload.array("images"),
+  async (req, res, next) => {
+    try {
+      const { articleNumber } = req.params;
+      // Отримуємо існуючий запис товару
+      const oldProduct = await db
+        .select({ imageUrls: products.imageUrls })
+        .from(products)
+        .where(eq(products.articleNumber, articleNumber))
+        .then((results) => results[0]);
+      if (!oldProduct) return next(createError(404, "Продукт не знайдено"));
 
-    // Оновлення запису в таблиці products
-    const [updatedProduct] = await db
-      .update(products)
-      .set({
-        brandId,
-        price,
-        discount: discount || 0,
-        name,
-        description,
-        imageUrls,
-      })
-      .where(eq(products.articleNumber, articleNumber))
-      .returning();
+      // Отримуємо новий список URL зображень, переданий у полі "imageUrls"
+      const newImageUrls = req.body.imageUrls
+        ? JSON.parse(req.body.imageUrls)
+        : [];
 
-    if (!updatedProduct) {
-      return next(createError(404, "Продукт не знайдено"));
-    }
-
-    // Оновлення зв'язку з категорією (якщо categoryId передано)
-    if (categoryId) {
-      // Видаляємо попередній запис для цього товару
-      await db
-        .delete(productCategories)
-        .where(eq(productCategories.articleNumber, articleNumber));
-      // Вставляємо новий запис
-      await db.insert(productCategories).values({
-        articleNumber,
-        categoryId,
-        imageUrl: imageUrls[0], // або інше бажане значення
-      });
-    }
-
-    // Оновлення розмірів:
-    if (sizes && Array.isArray(sizes)) {
-      // Видаляємо всі існуючі розміри для цього товару
-      await db
-        .delete(productSizes)
-        .where(eq(productSizes.articleNumber, articleNumber));
-      // Вставляємо нові записи
-      for (const sizeObj of sizes) {
-        const { size, stock } = sizeObj;
-        if (!size || stock == null) continue;
-        await db.insert(productSizes).values({
-          articleNumber,
-          size,
-          stock,
-        });
+      // Якщо завантажено нові зображення, додаємо їх URL
+      let uploadedImageUrls = [];
+      if (req.files && req.files.length > 0) {
+        uploadedImageUrls = req.files.map(
+          (file) =>
+            `${req.protocol}://${req.get("host")}/images/${file.filename}`
+        );
       }
-    }
+      const finalImageUrls = [...newImageUrls, ...uploadedImageUrls];
 
-    res.json(updatedProduct);
-  } catch (error) {
-    console.error("Error updating product:", error);
-    next(createError(500, "Не вдалося оновити продукт"));
+      // Обчислюємо, які зображення видалено: ті, що були в базі, але відсутні у finalImageUrls
+      const imagesToDelete = oldProduct.imageUrls.filter(
+        (url) => !finalImageUrls.includes(url)
+      );
+      if (imagesToDelete.length > 0) {
+        await deleteFiles(imagesToDelete);
+      }
+
+      // Формуємо об'єкт оновлених даних
+      const updatedFields = {
+        brandId: Number(req.body.brandId),
+        price: Number(req.body.price),
+        discount: Number(req.body.discount),
+        name: req.body.name,
+        description: req.body.description,
+        categoryId: Number(req.body.categoryId),
+        sizes: req.body.sizes ? JSON.parse(req.body.sizes) : [],
+        imageUrls: finalImageUrls,
+      };
+
+      // Оновлюємо запис товару в базі даних
+      const updatedProducts = await db
+        .update(products)
+        .set(updatedFields)
+        .where(eq(products.articleNumber, articleNumber))
+        .returning();
+      if (!updatedProducts || updatedProducts.length === 0) {
+        return next(createError(404, "Продукт не знайдено"));
+      }
+      res.json(updatedProducts[0]);
+    } catch (error) {
+      console.error("Помилка оновлення продукту:", error);
+      next(createError(500, "Не вдалося оновити продукт"));
+    }
   }
-});
+);
 
 app.delete("/product/:articleNumber", async (req, res, next) => {
   try {
@@ -852,31 +757,58 @@ app.post("/categories", upload.single("image"), async (req, res, next) => {
     next(createError(500, "Не вдалося додати категорію"));
   }
 });
-app.put("/categories/:categoryId", async (req, res, next) => {
-  try {
-    const { categoryId } = req.params;
-    const { name, imageUrl } = req.body;
 
-    if (!name) {
-      return next(createError(400, "Поле назви категорії є обов'язковим"));
+app.put(
+  "/categories/:categoryId",
+  upload.single("image"),
+  async (req, res, next) => {
+    try {
+      const { categoryId } = req.params;
+      const { name } = req.body;
+      const file = req.file;
+
+      if (!name) {
+        return next(createError(400, "Поле назви категорії є обов'язковим"));
+      }
+
+      let imageUrl;
+      if (file) {
+        imageUrl = `${req.protocol}://${req.get("host")}/images/${
+          file.filename
+        }`;
+      } else {
+        const existingCategory = await fetchOne(
+          db
+            .select({ imageUrl: categories.imageUrl })
+            .from(categories)
+            .where(eq(categories.categoryId, Number(categoryId)))
+        );
+        if (!existingCategory) {
+          return next(createError(404, "Категорію не знайдено"));
+        }
+        imageUrl = existingCategory.imageUrl;
+      }
+
+      const [updatedCategory] = await db
+        .update(categories)
+        .set({ name, imageUrl })
+        .where(eq(categories.categoryId, Number(categoryId)))
+        .returning();
+
+      if (!updatedCategory) {
+        return next(createError(404, "Категорію не знайдено"));
+      }
+
+      res.json(updatedCategory);
+    } catch (error) {
+      if (req.file) {
+        await deleteFiles([req.file]);
+      }
+      console.error("Error updating category:", error);
+      next(createError(500, "Не вдалося оновити категорію"));
     }
-
-    const [updatedCategory] = await db
-      .update(categories)
-      .set({ name, imageUrl })
-      .where(eq(categories.categoryId, Number(categoryId)))
-      .returning();
-
-    if (!updatedCategory) {
-      return next(createError(404, "Категорію не знайдено"));
-    }
-
-    res.json(updatedCategory);
-  } catch (error) {
-    console.error("Error updating category:", error);
-    next(createError(500, "Не вдалося оновити категорію"));
   }
-});
+);
 
 app.delete("/categories/:categoryId", async (req, res, next) => {
   try {
