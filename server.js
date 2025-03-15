@@ -1040,26 +1040,24 @@ app.get("/orders/all", async (req, res, next) => {
     next(createError(500, "Не вдалося завантажити всі замовлення"));
   }
 });
-app.post("/order/checkout", async (req, res, next) => {
+
+app.post("/orders/checkout", async (req, res, next) => {
   try {
     const { orderId, deliveryAddress, telephone, paymentMethod } = req.body;
-
-    // Перевірка, чи передано orderId і чи є він числом
     if (!orderId || isNaN(Number(orderId))) {
       return next(createError(400, "orderId є обов'язковим і має бути числом"));
     }
-
-    const orderIdNum = Number(orderId); // Перетворюємо в число
+    const orderIdNum = Number(orderId);
 
     const updatedOrders = await db
-      .update("orders")
+      .update(orders) // Використовуємо об’єкт таблиці orders
       .set({
-        orderStatusId: 2, // Підтверджуємо замовлення
+        orderStatusId: 2,
         deliveryAddress: deliveryAddress || null,
         telephone: telephone || null,
         paymentMethod: paymentMethod || null,
       })
-      .where(db.eq("orders.orderId", orderIdNum))
+      .where(eq(orders.orderId, orderIdNum)) // Використовуємо eq
       .returning();
 
     if (!updatedOrders || updatedOrders.length === 0) {
@@ -1072,8 +1070,68 @@ app.post("/order/checkout", async (req, res, next) => {
     next(createError(500, "Не вдалося оформити замовлення"));
   }
 });
-
+app.get("/orders/history", authenticate, async (req, res, next) => {
+  try {
+    const { userId } = req.user;
+    const userOrders = await db
+      .select({
+        orderId: orders.orderId,
+        userId: orders.userId,
+        orderStatusId: orders.orderStatusId,
+        orderDate: orders.orderDate,
+      })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.userId, userId),
+          or(
+            eq(orders.orderStatusId, 2),
+            eq(orders.orderStatusId, 3),
+            eq(orders.orderStatusId, 4),
+            eq(orders.orderStatusId, 5)
+          )
+        )
+      );
+    res.json(userOrders);
+  } catch (error) {
+    console.error("Error fetching order history:", error);
+    next(createError(500, "Failed to fetch order history"));
+  }
+});
 //-------------------------------------------------------ORDER-ITEMS----------------------------------------------------------------------
+app.get("/order-items/history", authenticate, async (req, res, next) => {
+  try {
+    const { userId } = req.user;
+    const userOrderItems = await db
+      .select({
+        productOrderId: orderItems.productOrderId,
+        orderId: orderItems.orderId,
+        articleNumber: orderItems.articleNumber,
+        size: orderItems.size,
+        quantity: orderItems.quantity,
+        name: products.name,
+        imageUrls: products.imageUrls,
+      })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.orderId))
+      .leftJoin(products, eq(orderItems.articleNumber, products.articleNumber))
+      .where(
+        and(
+          eq(orders.userId, userId),
+          or(
+            eq(orders.orderStatusId, 2),
+            eq(orders.orderStatusId, 3),
+            eq(orders.orderStatusId, 4),
+            eq(orders.orderStatusId, 5)
+          )
+        )
+      );
+    res.json(userOrderItems);
+  } catch (error) {
+    console.error("Помилка отримання позицій історії замовлень:", error);
+    next(createError(500, "Не вдалося отримати позиції історії замовлень"));
+  }
+});
 
 // GET /order-items – отримання позицій замовлення користувача
 app.get("/order-items", authenticate, async (req, res, next) => {
@@ -1086,20 +1144,24 @@ app.get("/order-items", authenticate, async (req, res, next) => {
         articleNumber: orderItems.articleNumber,
         size: orderItems.size,
         quantity: orderItems.quantity,
-        name: products.name, // додаємо назву товару
-        imageUrls: products.imageUrls, // додаємо URL зображень товару
+        name: products.name,
+        imageUrls: products.imageUrls,
       })
       .from(orderItems)
       .innerJoin(orders, eq(orderItems.orderId, orders.orderId))
       .leftJoin(products, eq(orderItems.articleNumber, products.articleNumber))
-      .where(eq(orders.userId, userId));
+      .where(
+        and(
+          eq(orders.userId, userId),
+          eq(orders.orderStatusId, 1) // Фільтруємо лише замовлення зі статусом "В кошику"
+        )
+      );
     res.json(userOrderItems);
   } catch (error) {
     console.error("Error fetching order items:", error);
     next(createError(500, "Failed to fetch order items"));
   }
 });
-
 // POST /order-items – додавання позиції замовлення
 app.post("/order-items", authenticate, async (req, res, next) => {
   try {
