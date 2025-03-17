@@ -388,8 +388,6 @@ app.post("/products", upload.array("images"), async (req, res, next) => {
     } = req.body;
     const files = req.files;
 
-    console.log("Files received:", files); // Додано логування для дебагу
-
     if (
       !articleNumber ||
       !brandId ||
@@ -409,6 +407,16 @@ app.post("/products", upload.array("images"), async (req, res, next) => {
       return next(
         createError(400, "Потрібно завантажити хоча б одне зображення")
       );
+    }
+
+    // Перевірка на унікальність articleNumber
+    const existingProduct = await db
+      .select()
+      .from(products)
+      .where(eq(products.articleNumber, articleNumber))
+      .limit(1);
+    if (existingProduct.length > 0) {
+      return next(createError(409, "Товар з таким articleNumber уже існує"));
     }
 
     const imageUrls = files.map(
@@ -458,6 +466,7 @@ app.post("/products", upload.array("images"), async (req, res, next) => {
     next(createError(500, "Не вдалося додати продукт"));
   }
 });
+
 app.get("/products/active", async (req, res, next) => {
   try {
     const activeProducts = await db
@@ -518,11 +527,12 @@ app.get("/products/inactive", async (req, res, next) => {
         description: products.description,
         imageUrls: products.imageUrls,
         brand: brands.name,
-        category: categories.name, // Назва категорії
-        categoryId: categories.categoryId, // Ідентифікатор категорії
+        category: categories.name,
+        categoryId: categories.categoryId,
+        isActive: products.isActive, // Додаємо поле isActive
       })
       .from(products)
-      .where(eq(products.isActive, false)) // Фільтруємо лише неактивні продукти
+      .where(eq(products.isActive, false))
       .leftJoin(brands, eq(products.brandId, brands.brandId))
       .leftJoin(
         productCategories,
@@ -533,7 +543,6 @@ app.get("/products/inactive", async (req, res, next) => {
         eq(productCategories.categoryId, categories.categoryId)
       );
 
-    // Додавання розмірів для кожного товару
     const productsWithSizes = await Promise.all(
       inactiveProducts.map(async (prod) => {
         const sizes = await db
@@ -627,7 +636,6 @@ app.put(
   async (req, res, next) => {
     try {
       const { articleNumber } = req.params;
-      // Отримуємо існуючий запис товару
       const oldProduct = await db
         .select({ imageUrls: products.imageUrls })
         .from(products)
@@ -635,12 +643,9 @@ app.put(
         .then((results) => results[0]);
       if (!oldProduct) return next(createError(404, "Продукт не знайдено"));
 
-      // Отримуємо новий список URL зображень, переданий у полі "imageUrls"
       const newImageUrls = req.body.imageUrls
         ? JSON.parse(req.body.imageUrls)
         : [];
-
-      // Якщо завантажено нові зображення, додаємо їх URL
       let uploadedImageUrls = [];
       if (req.files && req.files.length > 0) {
         uploadedImageUrls = req.files.map(
@@ -650,7 +655,6 @@ app.put(
       }
       const finalImageUrls = [...newImageUrls, ...uploadedImageUrls];
 
-      // Обчислюємо, які зображення видалено: ті, що були в базі, але відсутні у finalImageUrls
       const imagesToDelete = oldProduct.imageUrls.filter(
         (url) => !finalImageUrls.includes(url)
       );
@@ -658,35 +662,50 @@ app.put(
         await deleteFiles(imagesToDelete);
       }
 
-      // Формуємо об'єкт оновлених даних
       const updatedFields = {
         brandId: Number(req.body.brandId),
         price: Number(req.body.price),
         discount: Number(req.body.discount),
         name: req.body.name,
         description: req.body.description,
-        categoryId: Number(req.body.categoryId),
-        sizes: req.body.sizes ? JSON.parse(req.body.sizes) : [],
         imageUrls: finalImageUrls,
       };
 
-      // Оновлюємо запис товару в базі даних
-      const updatedProducts = await db
+      const [updatedProduct] = await db
         .update(products)
         .set(updatedFields)
         .where(eq(products.articleNumber, articleNumber))
         .returning();
-      if (!updatedProducts || updatedProducts.length === 0) {
+
+      if (!updatedProduct) {
         return next(createError(404, "Продукт не знайдено"));
       }
-      res.json(updatedProducts[0]);
+
+      // Оновлення розмірів: видаляємо старі, додаємо нові
+      const sizes = req.body.sizes ? JSON.parse(req.body.sizes) : [];
+      if (Array.isArray(sizes)) {
+        await db
+          .delete(productSizes)
+          .where(eq(productSizes.articleNumber, articleNumber));
+        for (const sizeObj of sizes) {
+          const { size, stock } = sizeObj;
+          if (size && stock != null) {
+            await db.insert(productSizes).values({
+              articleNumber,
+              size,
+              stock: Number(stock),
+            });
+          }
+        }
+      }
+
+      res.json(updatedProduct);
     } catch (error) {
       console.error("Помилка оновлення продукту:", error);
       next(createError(500, "Не вдалося оновити продукт"));
     }
   }
 );
-
 app.delete("/product/:articleNumber", async (req, res, next) => {
   try {
     const { articleNumber } = req.params;
@@ -730,18 +749,16 @@ app.get("/search", async (req, res, next) => {
         description: products.description,
         imageUrls: products.imageUrls,
         brand: brands.name,
+        isActive: products.isActive, // Додаємо поле isActive
       })
       .from(products)
       .leftJoin(brands, eq(products.brandId, brands.brandId))
       .where(
-        and(
-          or(
-            ilike(products.name, `%${q}%`),
-            ilike(products.articleNumber, `%${q}%`)
-          ),
-          eq(products.isActive, true)
+        or(
+          ilike(products.name, `%${q}%`),
+          ilike(products.articleNumber, `%${q}%`)
         )
-      );
+      ); // Прибираємо умову eq(products.isActive, true)
 
     const productsWithSizes = await Promise.all(
       productsList.map(async (product) => {
@@ -1314,6 +1331,26 @@ app.delete("/order-items/:id", authenticate, async (req, res, next) => {
   } catch (error) {
     console.error("Error deleting order item:", error);
     next(createError(500, "Error deleting order item"));
+  }
+});
+
+app.get("/order-items/count", authenticate, async (req, res, next) => {
+  try {
+    const { userId } = req.user;
+    const countResult = await db
+      .select({ count: sql`count(*)` })
+      .from(orderItems)
+      .innerJoin(orders, eq(orderItems.orderId, orders.orderId))
+      .where(
+        and(
+          eq(orders.userId, userId),
+          eq(orders.orderStatusId, 1) // Only items in the cart
+        )
+      );
+    res.json({ count: Number(countResult[0].count) });
+  } catch (error) {
+    console.error("Error fetching cart item count:", error);
+    next(createError(500, "Failed to fetch cart item count"));
   }
 });
 
