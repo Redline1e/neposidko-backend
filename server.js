@@ -8,7 +8,7 @@ import path from "path";
 import fs from "fs/promises";
 import multer from "multer";
 import { db } from "./db/index.js";
-import { eq, ilike, and, or, lt } from "drizzle-orm";
+import { eq, ilike, and, or, lt, gt } from "drizzle-orm";
 import { fileURLToPath } from "url";
 import { authenticate } from "./middleware/auth.js";
 import cron from "node-cron";
@@ -484,7 +484,7 @@ app.get("/products/active", async (req, res, next) => {
         isActive: products.isActive,
       })
       .from(products)
-      .where(eq(products.isActive, true)) // Фільтруємо лише активні товари
+      .where(eq(products.isActive, true))
       .leftJoin(brands, eq(products.brandId, brands.brandId))
       .leftJoin(
         productCategories,
@@ -495,7 +495,6 @@ app.get("/products/active", async (req, res, next) => {
         eq(productCategories.categoryId, categories.categoryId)
       );
 
-    // Отримання розмірів для кожного товару
     const productsWithSizes = await Promise.all(
       activeProducts.map(async (prod) => {
         const sizes = await db
@@ -1066,27 +1065,100 @@ app.post("/orders/checkout", async (req, res, next) => {
     }
     const orderIdNum = Number(orderId);
 
-    const updatedOrders = await db
-      .update(orders) // Використовуємо об’єкт таблиці orders
-      .set({
-        orderStatusId: 2,
-        deliveryAddress: deliveryAddress || null,
-        telephone: telephone || null,
-        paymentMethod: paymentMethod || null,
-      })
-      .where(eq(orders.orderId, orderIdNum)) // Використовуємо eq
-      .returning();
+    // Використовуємо транзакцію для атомарності
+    await db.transaction(async (tx) => {
+      // Оновлення статусу замовлення
+      const updatedOrders = await tx
+        .update(orders)
+        .set({
+          orderStatusId: 2,
+          deliveryAddress: deliveryAddress || null,
+          telephone: telephone || null,
+          paymentMethod: paymentMethod || null,
+        })
+        .where(eq(orders.orderId, orderIdNum))
+        .returning();
 
-    if (!updatedOrders || updatedOrders.length === 0) {
-      return next(createError(404, "Замовлення не знайдено"));
-    }
+      if (!updatedOrders || updatedOrders.length === 0) {
+        throw createError(404, "Замовлення не знайдено");
+      }
+
+      // Отримання всіх позицій замовлення
+      const orderItemsList = await tx
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.orderId, orderIdNum));
+
+      // Оновлення залишків для кожного товару
+      for (const item of orderItemsList) {
+        const { articleNumber, size, quantity } = item;
+
+        // Знаходимо розмір товару в таблиці productSizes
+        const productSize = await tx
+          .select()
+          .from(productSizes)
+          .where(
+            and(
+              eq(productSizes.articleNumber, articleNumber),
+              eq(productSizes.size, size)
+            )
+          )
+          .limit(1);
+
+        if (!productSize || productSize.length === 0) {
+          throw createError(
+            404,
+            `Розмір ${size} для товару ${articleNumber} не знайдено`
+          );
+        }
+
+        const currentStock = productSize[0].stock;
+        if (currentStock < quantity) {
+          throw createError(
+            400,
+            `Недостатньо товару ${articleNumber} розміру ${size} на складі`
+          );
+        }
+
+        // Зменшуємо кількість на складі
+        await tx
+          .update(productSizes)
+          .set({ stock: currentStock - quantity })
+          .where(
+            and(
+              eq(productSizes.articleNumber, articleNumber),
+              eq(productSizes.size, size)
+            )
+          );
+
+        // Перевіряємо, чи залишилися доступні розміри для товару
+        const remainingSizes = await tx
+          .select()
+          .from(productSizes)
+          .where(
+            and(
+              eq(productSizes.articleNumber, articleNumber),
+              gt(productSizes.stock, 0)
+            )
+          );
+
+        // if (remainingSizes.length === 0) {
+        //   // Якщо немає доступних розмірів, деактивуємо товар
+        //   await tx
+        //     .update(products)
+        //     .set({ isActive: false })
+        //     .where(eq(products.articleNumber, articleNumber));
+        // }
+      }
+    });
 
     res.json({ message: "Замовлення оформлено успішно" });
   } catch (error) {
     console.error("Помилка оформлення замовлення:", error);
-    next(createError(500, "Не вдалося оформити замовлення"));
+    next(error);
   }
 });
+
 app.get("/orders/history", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
@@ -1191,6 +1263,36 @@ app.post("/order-items", authenticate, async (req, res, next) => {
       );
     }
 
+    // Перевірка наявності товару
+    const productSize = await db
+      .select()
+      .from(productSizes)
+      .where(
+        and(
+          eq(productSizes.articleNumber, articleNumber),
+          eq(productSizes.size, size)
+        )
+      )
+      .limit(1);
+
+    if (!productSize || productSize.length === 0) {
+      return next(
+        createError(
+          404,
+          `Розмір ${size} для товару ${articleNumber} не знайдено`
+        )
+      );
+    }
+
+    if (productSize[0].stock < quantity) {
+      return next(
+        createError(
+          400,
+          `Недостатньо товару ${articleNumber} розміру ${size} на складі`
+        )
+      );
+    }
+
     // Знаходимо активний ордер (orderStatusId = 1)
     let currentOrder = await fetchOne(
       db
@@ -1202,7 +1304,6 @@ app.post("/order-items", authenticate, async (req, res, next) => {
     );
 
     if (!currentOrder) {
-      // Якщо немає активного ордера, створюємо новий
       const newOrder = await fetchOne(
         db
           .insert(orders)
@@ -1211,7 +1312,6 @@ app.post("/order-items", authenticate, async (req, res, next) => {
       );
       currentOrder = newOrder;
     } else {
-      // Оновлюємо lastUpdated для існуючого ордера
       await db
         .update(orders)
         .set({ lastUpdated: new Date() })
