@@ -2107,6 +2107,242 @@ app.get("/generate-report", authenticate, async (req, res, next) => {
     next(createError(500, "Помилка формування звіту"));
   }
 });
+
+app.get("/admin/orders", authenticate,  async (req, res, next) => {
+  try {
+    const allOrders = await db
+      .select({
+        orderId: orders.orderId,
+        userId: orders.userId,
+        orderStatusId: orders.orderStatusId,
+        orderDate: orders.orderDate,
+        deliveryAddress: orders.deliveryAddress,
+        telephone: orders.telephone,
+        paymentMethod: orders.paymentMethod,
+        userEmail: users.email,
+        statusName: orderStatus.name,
+      })
+      .from(orders)
+      .leftJoin(users, eq(orders.userId, users.userId))
+      .leftJoin(
+        orderStatus,
+        eq(orders.orderStatusId, orderStatus.orderStatusId)
+      );
+    res.json(allOrders);
+  } catch (error) {
+    next(createError(500, "Не вдалося отримати замовлення"));
+  }
+});
+
+app.get(
+  "/admin/orders/:orderId",
+  authenticate,
+  
+  async (req, res, next) => {
+    try {
+      const { orderId } = req.params;
+      const order = await fetchOne(
+        db
+          .select({
+            orderId: orders.orderId,
+            userId: orders.userId,
+            orderStatusId: orders.orderStatusId,
+            orderDate: orders.orderDate,
+            deliveryAddress: orders.deliveryAddress,
+            telephone: orders.telephone,
+            paymentMethod: orders.paymentMethod,
+            userEmail: users.email,
+            statusName: orderStatus.name,
+          })
+          .from(orders)
+          .leftJoin(users, eq(orders.userId, users.userId))
+          .leftJoin(
+            orderStatus,
+            eq(orders.orderStatusId, orderStatus.orderStatusId)
+          )
+          .where(eq(orders.orderId, Number(orderId)))
+      );
+      if (!order) return next(createError(404, "Замовлення не знайдено"));
+      const items = await db
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.orderId, Number(orderId)));
+      res.json({ ...order, items });
+    } catch (error) {
+      next(createError(500, "Не вдалося отримати деталі замовлення"));
+    }
+  }
+);
+
+app.put(
+  "/admin/orders/:orderId",
+  authenticate,
+  
+  async (req, res, next) => {
+    try {
+      const { orderId } = req.params;
+      const { orderStatusId, deliveryAddress, telephone, paymentMethod } =
+        req.body;
+      const [updatedOrder] = await db
+        .update(orders)
+        .set({ orderStatusId, deliveryAddress, telephone, paymentMethod })
+        .where(eq(orders.orderId, Number(orderId)))
+        .returning();
+      if (!updatedOrder)
+        return next(createError(404, "Замовлення не знайдено"));
+      res.json(updatedOrder);
+    } catch (error) {
+      next(createError(500, "Не вдалося оновити замовлення"));
+    }
+  }
+);
+
+app.delete(
+  "/admin/orders/:orderId",
+  authenticate,
+  
+  async (req, res, next) => {
+    try {
+      const { orderId } = req.params;
+      const deleted = await db
+        .delete(orders)
+        .where(eq(orders.orderId, Number(orderId)))
+        .returning();
+      if (!deleted.length)
+        return next(createError(404, "Замовлення не знайдено"));
+      res.json({ message: "Замовлення успішно видалено" });
+    } catch (error) {
+      next(createError(500, "Не вдалося видалити замовлення"));
+    }
+  }
+);
+
+// --- Управління коментарями ---
+
+app.get("/admin/reviews", authenticate,  async (req, res, next) => {
+  try {
+    const allReviews = await db
+      .select({
+        reviewId: reviews.reviewId,
+        userId: reviews.userId,
+        articleNumber: reviews.articleNumber,
+        rating: reviews.rating,
+        comment: reviews.comment,
+        reviewDate: reviews.reviewDate,
+        userEmail: users.email,
+        productName: products.name,
+      })
+      .from(reviews)
+      .leftJoin(users, eq(reviews.userId, users.userId))
+      .leftJoin(products, eq(reviews.articleNumber, products.articleNumber));
+    res.json(allReviews);
+  } catch (error) {
+    next(createError(500, "Не вдалося отримати коментарі"));
+  }
+});
+
+app.put(
+  "/admin/reviews/:reviewId",
+  authenticate,
+  
+  async (req, res, next) => {
+    try {
+      const { reviewId } = req.params;
+      const { rating, comment } = req.body;
+      const [updatedReview] = await db
+        .update(reviews)
+        .set({ rating, comment })
+        .where(eq(reviews.reviewId, Number(reviewId)))
+        .returning();
+      if (!updatedReview) return next(createError(404, "Коментар не знайдено"));
+      res.json(updatedReview);
+    } catch (error) {
+      next(createError(500, "Не вдалося оновити коментар"));
+    }
+  }
+);
+
+app.delete(
+  "/admin/reviews/:reviewId",
+  authenticate,
+  
+  async (req, res, next) => {
+    try {
+      const { reviewId } = req.params;
+      const deleted = await db
+        .delete(reviews)
+        .where(eq(reviews.reviewId, Number(reviewId)))
+        .returning();
+      if (!deleted.length)
+        return next(createError(404, "Коментар не знайдено"));
+      res.json({ message: "Коментар успішно видалено" });
+    } catch (error) {
+      next(createError(500, "Не вдалося видалити коментар"));
+    }
+  }
+);
+
+// --- Управління користувачами ---
+
+app.get("/admin/users", authenticate,  async (req, res, next) => {
+  try {
+    const allUsers = await db
+      .select({
+        userId: users.userId,
+        name: users.name,
+        email: users.email,
+        roleId: users.roleId,
+        telephone: users.telephone,
+        deliveryAddress: users.deliveryAddress,
+      })
+      .from(users);
+    res.json(allUsers);
+  } catch (error) {
+    next(createError(500, "Не вдалося отримати користувачів"));
+  }
+});
+
+app.put(
+  "/admin/users/:userId",
+  authenticate,
+  
+  async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      const { name, email, roleId, telephone, deliveryAddress } = req.body;
+      const [updatedUser] = await db
+        .update(users)
+        .set({ name, email, roleId, telephone, deliveryAddress })
+        .where(eq(users.userId, Number(userId)))
+        .returning();
+      if (!updatedUser)
+        return next(createError(404, "Користувача не знайдено"));
+      res.json(updatedUser);
+    } catch (error) {
+      next(createError(500, "Не вдалося оновити користувача"));
+    }
+  }
+);
+
+app.delete(
+  "/admin/users/:userId",
+  authenticate,
+  
+  async (req, res, next) => {
+    try {
+      const { userId } = req.params;
+      const deleted = await db
+        .delete(users)
+        .where(eq(users.userId, Number(userId)))
+        .returning();
+      if (!deleted.length)
+        return next(createError(404, "Користувача не знайдено"));
+      res.json({ message: "Користувача успішно видалено" });
+    } catch (error) {
+      next(createError(500, "Не вдалося видалити користувача"));
+    }
+  }
+);
 //---------------------------------------------------------------------------------------------------------------------------------------
 
 cron.schedule("0 * * * *", async () => {
