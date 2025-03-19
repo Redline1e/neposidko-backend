@@ -118,7 +118,6 @@ export const orderItems = pgTable("orderItems", {
 // ProductCategories table
 export const productCategories = pgTable("productCategories", {
   productCategoryId: serial("productCategoryId").primaryKey(),
-  imageUrl: text("imageUrl"),
   articleNumber: text("articleNumber").references(
     () => products.articleNumber,
     { onDelete: "cascade" }

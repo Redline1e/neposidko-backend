@@ -12,6 +12,7 @@ import { eq, ilike, and, or, lt, gt } from "drizzle-orm";
 import { fileURLToPath } from "url";
 import { authenticate } from "./middleware/auth.js";
 import cron from "node-cron";
+import xlsx from "xlsx";
 import {
   products,
   users,
@@ -23,6 +24,7 @@ import {
   favorites,
   reviews,
   productCategories,
+  orderStatus,
 } from "./db/schema.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -791,7 +793,13 @@ app.get("/categories", async (req, res, next) => {
       })
       .from(categories);
 
-    res.json(allCategories);
+    // Перетворюємо null на "" перед відправкою
+    const sanitizedCategories = allCategories.map((category) => ({
+      ...category,
+      imageUrl: category.imageUrl ?? "",
+    }));
+
+    res.json(sanitizedCategories);
   } catch (error) {
     console.error("Error fetching categories:", error);
     next(createError(500, "Failed to fetch categories"));
@@ -1758,7 +1766,349 @@ app.get("/sizes", async (req, res, next) => {
 
 //---------------------------------------------------------------------------------------------------------------------------------------
 
-// Додаємо в кінець файлу сервера
+// Налаштування multer для завантаження файлів у папку "uploads"
+const uploadExcel = multer({ dest: "uploads/" });
+
+// Ендпоінт для імпорту даних з Excel
+app.post("/upload-excel", uploadExcel.single("file"), async (req, res) => {
+  try {
+    // Перевірка, чи файл завантажено
+    const file = req.file;
+    if (!file) {
+      return res.status(400).json({ error: "Файл не завантажено" });
+    }
+
+    // Зчитування Excel-файлу
+    const workbook = xlsx.readFile(file.path, { cellDates: true });
+    const brandsSheet = workbook.Sheets["Brands"];
+    const categoriesSheet = workbook.Sheets["Categories"];
+    const productsSheet = workbook.Sheets["Products"];
+
+    // Перевірка наявності необхідних аркушів
+    if (!brandsSheet || !categoriesSheet || !productsSheet) {
+      return res.status(400).json({
+        error:
+          'Файл повинен містити аркуші "Brands", "Categories" і "Products"',
+      });
+    }
+
+    // Перетворення аркушів у JSON
+    const brandsData = xlsx.utils.sheet_to_json(brandsSheet);
+    const categoriesData = xlsx.utils.sheet_to_json(categoriesSheet);
+    const productsData = xlsx.utils.sheet_to_json(productsSheet);
+
+    // Ініціалізація логування
+    const log = { added: 0, updated: 0, skipped: 0, errors: [] };
+
+    // Виконання імпорту в транзакції
+    await db.transaction(async (tx) => {
+      // **Імпорт брендів**
+      for (const brand of brandsData) {
+        if (!brand.name || typeof brand.name !== "string") {
+          log.errors.push(
+            `Пропущено бренд: name є обов'язковим і має бути рядком`
+          );
+          continue;
+        }
+
+        const existingBrand = await tx
+          .select()
+          .from(brands)
+          .where(eq(brands.name, brand.name))
+          .limit(1);
+
+        if (existingBrand.length > 0) {
+          log.skipped++;
+        } else {
+          await tx.insert(brands).values({ name: brand.name });
+          log.added++;
+        }
+      }
+
+      // **Імпорт категорій**
+      for (const category of categoriesData) {
+        if (!category.name || typeof category.name !== "string") {
+          log.errors.push(
+            `Пропущено категорію: name є обов'язковим і має бути рядком`
+          );
+          continue;
+        }
+
+        const existingCategory = await tx
+          .select()
+          .from(categories)
+          .where(eq(categories.name, category.name))
+          .limit(1);
+
+        if (existingCategory.length > 0) {
+          if (
+            category.imageUrl &&
+            category.imageUrl !== existingCategory[0].imageUrl
+          ) {
+            await tx
+              .update(categories)
+              .set({ imageUrl: category.imageUrl })
+              .where(eq(categories.categoryId, existingCategory[0].categoryId));
+            log.updated++;
+          } else {
+            log.skipped++;
+          }
+        } else {
+          await tx.insert(categories).values({
+            name: category.name,
+            imageUrl: category.imageUrl || null,
+          });
+          log.added++;
+        }
+      }
+
+      // **Імпорт продуктів**
+      for (const product of productsData) {
+        // Валідація обов'язкових полів
+        if (
+          !product.articleNumber ||
+          !product.brand ||
+          !product.category ||
+          !product.price ||
+          !product.name
+        ) {
+          log.errors.push(
+            `Пропущено продукт: обов'язкові поля відсутні (${JSON.stringify(
+              product
+            )})`
+          );
+          continue;
+        }
+        if (typeof product.price !== "number" || isNaN(product.price)) {
+          log.errors.push(
+            `Пропущено продукт ${product.articleNumber}: price має бути числом`
+          );
+          continue;
+        }
+
+        // Перевірка бренду
+        const brand = await tx
+          .select()
+          .from(brands)
+          .where(eq(brands.name, product.brand))
+          .limit(1);
+        if (brand.length === 0) {
+          log.errors.push(
+            `Пропущено продукт ${product.articleNumber}: бренд "${product.brand}" не знайдено`
+          );
+          continue;
+        }
+
+        // Перевірка категорії
+        const category = await tx
+          .select()
+          .from(categories)
+          .where(eq(categories.name, product.category))
+          .limit(1);
+        if (category.length === 0) {
+          log.errors.push(
+            `Пропущено продукт ${product.articleNumber}: категорію "${product.category}" не знайдено`
+          );
+          continue;
+        }
+
+        const existingProduct = await tx
+          .select()
+          .from(products)
+          .where(eq(products.articleNumber, product.articleNumber))
+          .limit(1);
+        const imageUrls = product.imageUrls
+          ? String(product.imageUrls)
+              .split(",")
+              .map((url) => url.trim())
+          : [];
+
+        if (existingProduct.length > 0) {
+          // Перевірка на дублікат
+          const existingImages = existingProduct[0].imageUrls || [];
+          const isDuplicate =
+            existingProduct[0].name === product.name &&
+            existingProduct[0].price === product.price &&
+            existingProduct[0].description === (product.description || "") &&
+            JSON.stringify(existingImages) === JSON.stringify(imageUrls);
+
+          if (isDuplicate) {
+            log.skipped++;
+            continue;
+          }
+
+          // Оновлення продукту
+          await tx
+            .update(products)
+            .set({
+              brandId: brand[0].brandId,
+              price: product.price,
+              discount: product.discount
+                ? Number(product.discount)
+                : existingProduct[0].discount,
+              name: product.name,
+              description:
+                product.description || existingProduct[0].description,
+              imageUrls:
+                imageUrls.length > 0 ? imageUrls : existingProduct[0].imageUrls,
+              isActive: true,
+            })
+            .where(eq(products.articleNumber, product.articleNumber));
+
+          await tx
+            .update(productCategories)
+            .set({
+              categoryId: category[0].categoryId,
+              imageUrl: imageUrls[0] || null,
+            })
+            .where(eq(productCategories.articleNumber, product.articleNumber));
+
+          // Обробка розмірів
+          if (product.sizes) {
+            try {
+              const sizes = JSON.parse(product.sizes);
+              if (Array.isArray(sizes)) {
+                await tx
+                  .delete(productSizes)
+                  .where(eq(productSizes.articleNumber, product.articleNumber));
+                for (const sizeObj of sizes) {
+                  const { size, stock } = sizeObj;
+                  if (size && stock != null) {
+                    await tx.insert(productSizes).values({
+                      articleNumber: product.articleNumber,
+                      size,
+                      stock: Number(stock),
+                    });
+                  }
+                }
+              }
+            } catch (error) {
+              log.errors.push(
+                `Помилка парсингу розмірів для продукту ${product.articleNumber}: ${error.message}`
+              );
+            }
+          }
+          log.updated++;
+        } else {
+          // Додавання нового продукту
+          await tx.insert(products).values({
+            articleNumber: product.articleNumber,
+            brandId: brand[0].brandId,
+            price: product.price,
+            discount: product.discount ? Number(product.discount) : 0,
+            name: product.name,
+            description: product.description || "",
+            imageUrls,
+            isActive: true,
+          });
+
+          await tx.insert(productCategories).values({
+            articleNumber: product.articleNumber,
+            categoryId: category[0].categoryId,
+            imageUrl: imageUrls[0] || null,
+          });
+
+          // Обробка розмірів
+          if (product.sizes) {
+            try {
+              const sizes = JSON.parse(product.sizes);
+              if (Array.isArray(sizes)) {
+                for (const sizeObj of sizes) {
+                  const { size, stock } = sizeObj;
+                  if (size && stock != null) {
+                    await tx.insert(productSizes).values({
+                      articleNumber: product.articleNumber,
+                      size,
+                      stock: Number(stock),
+                    });
+                  }
+                }
+              }
+            } catch (error) {
+              log.errors.push(
+                `Помилка парсингу розмірів для продукту ${product.articleNumber}: ${error.message}`
+              );
+            }
+          }
+          log.added++;
+        }
+      }
+    });
+
+    // Видалення тимчасового файлу
+    await fs.unlink(file.path);
+
+    // Відповідь із результатами імпорту
+    res.json({ message: "Дані успішно імпортовано", log });
+  } catch (error) {
+    console.error("Помилка імпорту:", error);
+    res.status(500).json({ error: "Помилка імпорту даних" });
+  }
+});
+
+//---------------------------------------------------------------------------------------------------------------------------------------
+
+// Ендпоінт для генерації звіту з замовлень
+app.get("/generate-report", authenticate, async (req, res, next) => {
+  try {
+    // Отримуємо всі замовлення з інформацією про користувача та статус
+    const allOrders = await db
+      .select({
+        orderId: orders.orderId,
+        userId: orders.userId,
+        orderStatusId: orders.orderStatusId,
+        orderDate: orders.orderDate,
+        deliveryAddress: orders.deliveryAddress,
+        telephone: orders.telephone,
+        paymentMethod: orders.paymentMethod,
+        userEmail: users.email, // Додаємо email користувача
+        userName: users.name, // Додаємо ім'я користувача
+        statusName: orderStatus.name, // Додаємо текстовий статус
+      })
+      .from(orders)
+      .leftJoin(users, eq(orders.userId, users.userId)) // Приєднуємо таблицю users
+      .leftJoin(
+        orderStatus,
+        eq(orders.orderStatusId, orderStatus.orderStatusId)
+      ); // Приєднуємо таблицю orderStatus
+
+    // Формуємо дані для Excel
+    const worksheetData = allOrders.map((order) => ({
+      "ID замовлення": order.orderId,
+      "Ім'я користувача": order.userName || "Не вказано",
+      "Пошта користувача": order.userEmail || "Не вказано",
+      Статус: order.statusName || "Не визначено", // Текстовий статус
+      "Дата замовлення": order.orderDate.toISOString(),
+      "Адреса доставки": order.deliveryAddress || "Не вказано",
+      Телефон: order.telephone || "Не вказано",
+      "Метод оплати": order.paymentMethod || "Не вказано",
+    }));
+
+    // Створюємо новий workbook та worksheet
+    const workbook = xlsx.utils.book_new();
+    const worksheet = xlsx.utils.json_to_sheet(worksheetData);
+    xlsx.utils.book_append_sheet(workbook, worksheet, "Замовлення");
+
+    // Зберігаємо файл тимчасово
+    const filePath = path.join(__dirname, "report.xlsx");
+    xlsx.writeFile(workbook, filePath);
+
+    // Відправляємо файл клієнту
+    res.download(filePath, "orders_report.xlsx", async (err) => {
+      if (err) {
+        console.error("Помилка відправки файлу:", err);
+        return next(err);
+      }
+      // Видаляємо тимчасовий файл після відправки
+      await fs.unlink(filePath);
+    });
+  } catch (error) {
+    console.error("Помилка формування звіту:", error);
+    next(createError(500, "Помилка формування звіту"));
+  }
+});
+//---------------------------------------------------------------------------------------------------------------------------------------
+
 cron.schedule("0 * * * *", async () => {
   // Щогодини
   try {
