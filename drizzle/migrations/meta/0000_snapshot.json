@@ -1,5 +1,5 @@
 {
-  "id": "33ef3c95-80d6-48dd-a518-e010df024dc3",
+  "id": "e58631af-29cd-466d-b30a-75655d915dd2",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -229,9 +229,47 @@
           "primaryKey": false,
           "notNull": false
         },
+        "sessionId": {
+          "name": "sessionId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "orderStatusId": {
           "name": "orderStatusId",
           "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "orderDate": {
+          "name": "orderDate",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "lastUpdated": {
+          "name": "lastUpdated",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deliveryAddress": {
+          "name": "deliveryAddress",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "telephone": {
+          "name": "telephone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paymentMethod": {
+          "name": "paymentMethod",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         }
@@ -280,12 +318,6 @@
           "type": "serial",
           "primaryKey": true,
           "notNull": true
-        },
-        "imageUrl": {
-          "name": "imageUrl",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "articleNumber": {
           "name": "articleNumber",

@@ -31,12 +31,17 @@ CREATE TABLE "orderStatus" (
 CREATE TABLE "orders" (
 	"orderId" serial PRIMARY KEY NOT NULL,
 	"userId" integer,
-	"orderStatusId" integer
+	"sessionId" text,
+	"orderStatusId" integer,
+	"orderDate" timestamp DEFAULT now() NOT NULL,
+	"lastUpdated" timestamp DEFAULT now() NOT NULL,
+	"deliveryAddress" text,
+	"telephone" text,
+	"paymentMethod" text
 );
 --> statement-breakpoint
 CREATE TABLE "productCategories" (
 	"productCategoryId" serial PRIMARY KEY NOT NULL,
-	"imageUrl" text,
 	"articleNumber" text,
 	"categoryId" integer
 );

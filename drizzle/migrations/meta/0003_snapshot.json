@@ -1,6 +1,6 @@
 {
-  "id": "4674d269-551b-4a61-9ca7-b920b9672672",
-  "prevId": "65186d69-9a92-4dcc-a60f-5cf11b0e7903",
+  "id": "de5ac82d-b953-4059-9ce5-bb926cbada52",
+  "prevId": "23b043ba-50bc-4fe0-bf6b-9aa858b5ab44",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -229,6 +229,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "sessionId": {
+          "name": "sessionId",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "orderStatusId": {
           "name": "orderStatusId",
           "type": "integer",
@@ -312,12 +318,6 @@
           "type": "serial",
           "primaryKey": true,
           "notNull": true
-        },
-        "imageUrl": {
-          "name": "imageUrl",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "articleNumber": {
           "name": "articleNumber",

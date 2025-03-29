@@ -44,7 +44,6 @@ export const orders = pgTable("orders", {
   ),
   orderDate: timestamp("orderDate").defaultNow().notNull(),
   lastUpdated: timestamp("lastUpdated").defaultNow().notNull(),
-  // Нові необов'язкові параметри:
   deliveryAddress: text("deliveryAddress"),
   telephone: text("telephone"),
   paymentMethod: text("paymentMethod"),
@@ -70,7 +69,7 @@ export const products = pgTable("products", {
   isActive: boolean("isActive").default(true).notNull(),
 });
 
-// ProductSizes table (новий підхід для збереження розмірів)
+// ProductSizes table
 export const productSizes = pgTable("productSizes", {
   sizeId: serial("sizeId").primaryKey(),
   articleNumber: text("articleNumber")
@@ -102,7 +101,7 @@ export const categories = pgTable("categories", {
   imageUrl: text("imageUrl"),
 });
 
-// OrderItems table (додано поле `size` для вибору розміру при замовленні)
+// OrderItems table
 export const orderItems = pgTable("orderItems", {
   productOrderId: serial("productOrderId").primaryKey(),
   orderId: integer("orderId")

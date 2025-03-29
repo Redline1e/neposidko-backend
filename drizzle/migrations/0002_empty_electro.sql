@@ -1,1 +1,0 @@
-ALTER TABLE "orders" ADD COLUMN "lastUpdated" timestamp DEFAULT now() NOT NULL;

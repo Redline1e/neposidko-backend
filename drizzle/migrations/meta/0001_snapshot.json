@@ -1,6 +1,6 @@
 {
-  "id": "ca35b77a-6b6e-4af5-a7dc-e8a7c256b7d0",
-  "prevId": "33ef3c95-80d6-48dd-a518-e010df024dc3",
+  "id": "3d816c58-cfd5-4cab-9278-97e95256fdd4",
+  "prevId": "e58631af-29cd-466d-b30a-75655d915dd2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -241,6 +241,31 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
+        },
+        "lastUpdated": {
+          "name": "lastUpdated",
+          "type": "timestamp",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "deliveryAddress": {
+          "name": "deliveryAddress",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "telephone": {
+          "name": "telephone",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "paymentMethod": {
+          "name": "paymentMethod",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
         }
       },
       "indexes": {},
@@ -287,12 +312,6 @@
           "type": "serial",
           "primaryKey": true,
           "notNull": true
-        },
-        "imageUrl": {
-          "name": "imageUrl",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
         },
         "articleNumber": {
           "name": "articleNumber",

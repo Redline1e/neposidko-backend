@@ -1,1 +1,0 @@
-ALTER TABLE "productCategories" DROP COLUMN "imageUrl";

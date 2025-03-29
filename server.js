@@ -13,6 +13,7 @@ import { fileURLToPath } from "url";
 import { authenticate } from "./middleware/auth.js";
 import cron from "node-cron";
 import xlsx from "xlsx";
+import session from "express-session";
 import {
   products,
   users,
@@ -43,7 +44,29 @@ app.use(
 );
 
 app.use(express.json());
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "your-secret-key", // Додай секрет у .env
+    resave: false,
+    saveUninitialized: true,
+    cookie: { secure: false }, // У продакшені встанови secure: true з HTTPS
+  })
+);
 app.use("/images", express.static(path.join(__dirname, "public", "images")));
+
+const optionalAuth = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    try {
+      const token = authHeader.split(" ")[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      req.user = { userId: decoded.userId };
+    } catch (error) {
+      // Якщо токен недійсний, продовжуємо як гість.
+    }
+  }
+  next();
+};
 
 // Допоміжна функція для отримання першого результату запиту
 const fetchOne = async (query) => {
@@ -85,9 +108,18 @@ const deleteFiles = async (filesOrUrls) => {
 //-------------------------------------------------------USERS----------------------------------------------------------------------
 
 app.post("/register", async (req, res, next) => {
+  console.log("=== Початок маршруту /register ===");
+
   try {
-    const { email, password } = req.body;
+    // Додатково отримуємо дані кошика та favorites, які передаються з клієнта (з localStorage)
+    const {
+      email,
+      password,
+      cart: clientCart,
+      favorites: clientFavorites,
+    } = req.body;
     if (!email || !password) {
+      console.log("Лог: Відсутній email або пароль");
       return next(createError(400, "Усі поля обов'язкові!"));
     }
 
@@ -104,6 +136,7 @@ app.post("/register", async (req, res, next) => {
     );
 
     if (existingUser) {
+      console.log("Лог: Користувач вже існує:", sanitizedEmail);
       return next(createError(409, "Користувач вже існує!"));
     }
 
@@ -125,14 +158,156 @@ app.post("/register", async (req, res, next) => {
       });
 
     if (!insertedUsers || insertedUsers.length === 0) {
+      console.log("Лог: Помилка вставлення користувача");
       return next(createError(500, "Не вдалося створити користувача"));
     }
 
     const newUser = insertedUsers[0];
+    console.log("Лог: Новий користувач створено", newUser);
+
+    // ===== Міграція favorites =====
+    if (
+      clientFavorites &&
+      Array.isArray(clientFavorites) &&
+      clientFavorites.length > 0
+    ) {
+      console.log("Лог: Початок міграції favorites з req.body");
+      for (const articleNumber of clientFavorites) {
+        const existingFavorite = await fetchOne(
+          db
+            .select()
+            .from(favorites)
+            .where(
+              and(
+                eq(favorites.userId, newUser.userId),
+                eq(favorites.articleNumber, articleNumber)
+              )
+            )
+            .limit(1)
+        );
+        if (!existingFavorite) {
+          console.log(`Лог: Додавання favorites ${articleNumber} з req.body`);
+          await db.insert(favorites).values({
+            userId: newUser.userId,
+            articleNumber,
+          });
+        } else {
+          console.log(`Лог: Товар ${articleNumber} вже існує в favorites`);
+        }
+      }
+    } else if (req.session.favorites && req.session.favorites.length > 0) {
+      console.log("Лог: Початок міграції favorites з req.session");
+      for (const articleNumber of req.session.favorites) {
+        const existingFavorite = await fetchOne(
+          db
+            .select()
+            .from(favorites)
+            .where(
+              and(
+                eq(favorites.userId, newUser.userId),
+                eq(favorites.articleNumber, articleNumber)
+              )
+            )
+            .limit(1)
+        );
+        if (!existingFavorite) {
+          console.log(
+            `Лог: Додавання favorites ${articleNumber} з req.session`
+          );
+          await db
+            .insert(favorites)
+            .values({ userId: newUser.userId, articleNumber });
+        } else {
+          console.log(
+            `Лог: Товар ${articleNumber} вже існує в favorites (req.session)`
+          );
+        }
+      }
+      req.session.favorites = [];
+    } else {
+      console.log("Лог: Немає favorites для міграції");
+    }
+
+    // ===== Міграція кошика (cart) =====
+    if (clientCart && Array.isArray(clientCart) && clientCart.length > 0) {
+      console.log("Лог: Початок міграції кошика з req.body");
+      let currentOrder = await fetchOne(
+        db
+          .select({ orderId: orders.orderId })
+          .from(orders)
+          .where(
+            and(
+              eq(orders.userId, newUser.userId),
+              eq(orders.orderStatusId, 1) // активний кошик
+            )
+          )
+          .limit(1)
+      );
+      if (!currentOrder) {
+        console.log("Лог: Активний кошик не знайдено, створюємо новий");
+        const newOrder = await db
+          .insert(orders)
+          .values({
+            userId: newUser.userId,
+            orderStatusId: 1,
+            lastUpdated: new Date(),
+          })
+          .returning({ orderId: orders.orderId });
+        currentOrder = newOrder[0];
+      }
+      for (const item of clientCart) {
+        console.log("Лог: Додавання товару до кошика з req.body", item);
+        await db.insert(orderItems).values({
+          orderId: currentOrder.orderId,
+          articleNumber: item.articleNumber,
+          size: item.size,
+          quantity: item.quantity,
+        });
+      }
+    } else if (req.session.cart && req.session.cart.length > 0) {
+      console.log("Лог: Початок міграції кошика з req.session");
+      let currentOrder = await fetchOne(
+        db
+          .select({ orderId: orders.orderId })
+          .from(orders)
+          .where(
+            and(eq(orders.userId, newUser.userId), eq(orders.orderStatusId, 1))
+          )
+          .limit(1)
+      );
+      if (!currentOrder) {
+        console.log(
+          "Лог: Активний кошик не знайдено (req.session), створюємо новий"
+        );
+        const newOrder = await db
+          .insert(orders)
+          .values({
+            userId: newUser.userId,
+            orderStatusId: 1,
+            lastUpdated: new Date(),
+          })
+          .returning({ orderId: orders.orderId });
+        currentOrder = newOrder[0];
+      }
+      for (const item of req.session.cart) {
+        console.log("Лог: Додавання товару до кошика з req.session", item);
+        await db.insert(orderItems).values({
+          orderId: currentOrder.orderId,
+          articleNumber: item.articleNumber,
+          size: item.size,
+          quantity: item.quantity,
+        });
+      }
+      req.session.cart = [];
+    } else {
+      console.log("Лог: Немає даних кошика для міграції");
+    }
+
     const token = jwt.sign({ userId: newUser.userId }, process.env.JWT_SECRET, {
       expiresIn: "1h",
     });
 
+    console.log("Лог: Реєстрація успішна, генеруємо токен");
     res.status(201).json({
       userId: newUser.userId,
       name: newUser.name,
@@ -144,17 +319,28 @@ app.post("/register", async (req, res, next) => {
     console.error("Помилка реєстрації:", error);
     next(error);
   }
+
+  console.log("=== Кінець маршруту /register ===");
 });
 
 app.post("/login", async (req, res, next) => {
+  console.log("=== Початок маршруту /login ===");
   try {
-    const { email, password } = req.body;
+    // Додатково отримуємо дані кошика та улюблених з запиту,
+    // які передаються з клієнта (з localStorage)
+    const {
+      email,
+      password,
+      cart: clientCart,
+      favorites: clientFavorites,
+    } = req.body;
     if (!email || !password) {
+      console.log("Лог: Відсутній email або пароль");
       return next(createError(400, "Усі поля обов'язкові!"));
     }
+    console.log("Лог: Email та пароль отримані, email:", email);
 
     const sanitizedEmail = email.trim().toLowerCase();
-
     const user = await fetchOne(
       db
         .select({
@@ -168,32 +354,162 @@ app.post("/login", async (req, res, next) => {
     );
 
     if (!user) {
+      console.log(`Лог: Користувача з email ${sanitizedEmail} не знайдено`);
       return next(createError(404, "Користувача не знайдено!"));
     }
-
-    if (!user.password) {
-      return next(
-        createError(
-          400,
-          "Ви зареєстровані через Google. Використовуйте Google для входу."
-        )
-      );
-    }
+    console.log("Лог: Користувач знайдений", user);
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
+      console.log("Лог: Невірний пароль");
       return next(createError(401, "Невірний пароль!"));
     }
+    console.log("Лог: Пароль успішно перевірено");
 
+    // === Синхронізація favorites ===
+    if (
+      clientFavorites &&
+      Array.isArray(clientFavorites) &&
+      clientFavorites.length > 0
+    ) {
+      console.log("Лог: Початок міграції favorites з req.body");
+      for (const articleNumber of clientFavorites) {
+        const existingFavorite = await fetchOne(
+          db
+            .select()
+            .from(favorites)
+            .where(
+              and(
+                eq(favorites.userId, user.userId),
+                eq(favorites.articleNumber, articleNumber)
+              )
+            )
+        );
+        if (!existingFavorite) {
+          console.log(
+            `Лог: Додавання улюбленого товару ${articleNumber} з req.body`
+          );
+          await db.insert(favorites).values({
+            userId: user.userId,
+            articleNumber,
+          });
+        } else {
+          console.log(`Лог: Товар ${articleNumber} вже існує в favorites`);
+        }
+      }
+    } else if (req.session.favorites && req.session.favorites.length > 0) {
+      console.log("Лог: Початок міграції favorites з req.session");
+      for (const articleNumber of req.session.favorites) {
+        const existingFavorite = await fetchOne(
+          db
+            .select()
+            .from(favorites)
+            .where(
+              and(
+                eq(favorites.userId, user.userId),
+                eq(favorites.articleNumber, articleNumber)
+              )
+            )
+        );
+        if (!existingFavorite) {
+          console.log(
+            `Лог: Додавання улюбленого товару ${articleNumber} з req.session`
+          );
+          await db.insert(favorites).values({
+            userId: user.userId,
+            articleNumber,
+          });
+        } else {
+          console.log(`Лог: Товар ${articleNumber} вже існує в favorites`);
+        }
+      }
+      req.session.favorites = [];
+    } else {
+      console.log("Лог: Немає favorites для міграції");
+    }
+
+    // === Синхронізація кошика (cart) ===
+    if (clientCart && Array.isArray(clientCart) && clientCart.length > 0) {
+      console.log("Лог: Початок міграції кошика з req.body");
+      let currentOrder = await fetchOne(
+        db
+          .select({ orderId: orders.orderId })
+          .from(orders)
+          .where(
+            and(
+              eq(orders.userId, user.userId),
+              eq(orders.orderStatusId, 1) // Активний кошик
+            )
+          )
+      );
+      if (!currentOrder) {
+        console.log("Лог: Активний кошик не знайдено, створюємо новий");
+        const newOrder = await db
+          .insert(orders)
+          .values({
+            userId: user.userId,
+            orderStatusId: 1,
+            lastUpdated: new Date(),
+          })
+          .returning({ orderId: orders.orderId });
+        currentOrder = newOrder[0];
+      }
+      for (const item of clientCart) {
+        console.log("Лог: Додавання товару до кошика з req.body", item);
+        await db.insert(orderItems).values({
+          orderId: currentOrder.orderId,
+          articleNumber: item.articleNumber,
+          size: item.size,
+          quantity: item.quantity,
+        });
+      }
+    } else if (req.session.cart && req.session.cart.length > 0) {
+      console.log("Лог: Початок міграції кошика з req.session");
+      let currentOrder = await fetchOne(
+        db
+          .select({ orderId: orders.orderId })
+          .from(orders)
+          .where(
+            and(eq(orders.userId, user.userId), eq(orders.orderStatusId, 1))
+          )
+      );
+      if (!currentOrder) {
+        console.log("Лог: Активний кошик не знайдено, створюємо новий");
+        const newOrder = await db
+          .insert(orders)
+          .values({
+            userId: user.userId,
+            orderStatusId: 1,
+            lastUpdated: new Date(),
+          })
+          .returning({ orderId: orders.orderId });
+        currentOrder = newOrder[0];
+      }
+      for (const item of req.session.cart) {
+        console.log("Лог: Додавання товару до кошика з req.session", item);
+        await db.insert(orderItems).values({
+          orderId: currentOrder.orderId,
+          articleNumber: item.articleNumber,
+          size: item.size,
+          quantity: item.quantity,
+        });
+      }
+      req.session.cart = [];
+    } else {
+      console.log("Лог: Немає даних кошика для міграції");
+    }
+
+    // Генерація токена
     const token = jwt.sign({ userId: user.userId }, process.env.JWT_SECRET, {
       expiresIn: "1h",
     });
-
+    console.log("Лог: Авторизація успішна, генеруємо токен");
     res.json({ token });
   } catch (error) {
-    console.error("Помилка входу:", error);
+    console.error("Помилка в маршруті /login:", error);
     next(error);
   }
+  console.log("=== Кінець маршруту /login ===");
 });
 
 app.get("/protected", authenticate, async (req, res, next) => {
@@ -1065,105 +1381,187 @@ app.get("/orders/all", async (req, res, next) => {
   }
 });
 
-app.post("/orders/checkout", async (req, res, next) => {
+app.post("/orders/checkout", optionalAuth, async (req, res, next) => {
   try {
-    const { orderId, deliveryAddress, telephone, paymentMethod } = req.body;
-    if (!orderId || isNaN(Number(orderId))) {
-      return next(createError(400, "orderId є обов'язковим і має бути числом"));
+    const { deliveryAddress, telephone, paymentMethod, email, name } = req.body;
+
+    // Для гостей перевіряємо наявність email та name,
+    // для авторизованих – ці дані беремо з профілю (req.user)
+    if (!deliveryAddress || !telephone || (!req.user && (!email || !name))) {
+      return next(
+        createError(
+          400,
+          "deliveryAddress, telephone, email та name є обов'язковими"
+        )
+      );
     }
-    const orderIdNum = Number(orderId);
 
-    // Використовуємо транзакцію для атомарності
+    let orderId;
+
     await db.transaction(async (tx) => {
-      // Оновлення статусу замовлення
-      const updatedOrders = await tx
-        .update(orders)
-        .set({
-          orderStatusId: 2,
-          deliveryAddress: deliveryAddress || null,
-          telephone: telephone || null,
-          paymentMethod: paymentMethod || null,
-        })
-        .where(eq(orders.orderId, orderIdNum))
-        .returning();
+      if (req.user) {
+        // Для авторизованих користувачів беремо userId з req.user
+        const { userId } = req.user;
+        const currentOrder = await fetchOne(
+          tx
+            .select({ orderId: orders.orderId })
+            .from(orders)
+            .where(and(eq(orders.userId, userId), eq(orders.orderStatusId, 1)))
+            .limit(1)
+        );
 
-      if (!updatedOrders || updatedOrders.length === 0) {
-        throw createError(404, "Замовлення не знайдено");
-      }
-
-      // Отримання всіх позицій замовлення
-      const orderItemsList = await tx
-        .select()
-        .from(orderItems)
-        .where(eq(orderItems.orderId, orderIdNum));
-
-      // Оновлення залишків для кожного товару
-      for (const item of orderItemsList) {
-        const { articleNumber, size, quantity } = item;
-
-        // Знаходимо розмір товару в таблиці productSizes
-        const productSize = await tx
-          .select()
-          .from(productSizes)
-          .where(
-            and(
-              eq(productSizes.articleNumber, articleNumber),
-              eq(productSizes.size, size)
-            )
-          )
-          .limit(1);
-
-        if (!productSize || productSize.length === 0) {
-          throw createError(
-            404,
-            `Розмір ${size} для товару ${articleNumber} не знайдено`
-          );
+        if (!currentOrder) {
+          throw createError(404, "Активний кошик не знайдено");
         }
+        orderId = currentOrder.orderId;
 
-        const currentStock = productSize[0].stock;
-        if (currentStock < quantity) {
-          throw createError(
-            400,
-            `Недостатньо товару ${articleNumber} розміру ${size} на складі`
-          );
-        }
-
-        // Зменшуємо кількість на складі
+        // Оновлюємо замовлення; email та name беремо із профілю, тому їх тут не використовуємо
         await tx
-          .update(productSizes)
-          .set({ stock: currentStock - quantity })
-          .where(
-            and(
-              eq(productSizes.articleNumber, articleNumber),
-              eq(productSizes.size, size)
-            )
-          );
+          .update(orders)
+          .set({
+            orderStatusId: 2,
+            deliveryAddress,
+            telephone,
+            paymentMethod,
+          })
+          .where(eq(orders.orderId, orderId));
+      } else {
+        // Для гостей email та name обов’язкові (вони передаються в тілі запиту)
+        if (!req.session.cart || req.session.cart.length === 0) {
+          throw createError(400, "Кошик порожній");
+        }
 
-        // Перевіряємо, чи залишилися доступні розміри для товару
-        const remainingSizes = await tx
-          .select()
-          .from(productSizes)
-          .where(
-            and(
-              eq(productSizes.articleNumber, articleNumber),
-              gt(productSizes.stock, 0)
-            )
-          );
+        const [newOrder] = await tx
+          .insert(orders)
+          .values({
+            userId: null, // гість
+            orderStatusId: 2,
+            deliveryAddress,
+            telephone,
+            paymentMethod,
+            email,
+            name,
+            lastUpdated: new Date(),
+          })
+          .returning({ orderId: orders.orderId });
+        orderId = newOrder.orderId;
 
-        // if (remainingSizes.length === 0) {
-        //   // Якщо немає доступних розмірів, деактивуємо товар
-        //   await tx
-        //     .update(products)
-        //     .set({ isActive: false })
-        //     .where(eq(products.articleNumber, articleNumber));
-        // }
+        // Додаємо товари з сесії до orderItems
+        for (const item of req.session.cart) {
+          const { articleNumber, size, quantity } = item;
+          const productSize = await tx
+            .select()
+            .from(productSizes)
+            .where(
+              and(
+                eq(productSizes.articleNumber, articleNumber),
+                eq(productSizes.size, size)
+              )
+            )
+            .limit(1);
+          if (productSize[0].stock < quantity) {
+            throw createError(
+              400,
+              `Недостатньо товару ${articleNumber} розміру ${size}`
+            );
+          }
+          await tx.insert(orderItems).values({
+            orderId,
+            articleNumber,
+            size,
+            quantity,
+          });
+          await tx
+            .update(productSizes)
+            .set({ stock: productSize[0].stock - quantity })
+            .where(
+              and(
+                eq(productSizes.articleNumber, articleNumber),
+                eq(productSizes.size, size)
+              )
+            );
+        }
+        req.session.cart = [];
       }
     });
 
-    res.json({ message: "Замовлення оформлено успішно" });
+    res.json({ message: "Замовлення оформлено успішно", orderId });
   } catch (error) {
     console.error("Помилка оформлення замовлення:", error);
     next(error);
+  }
+});
+
+app.post("/orders/guest-checkout", async (req, res) => {
+  try {
+    const { deliveryAddress, telephone, paymentMethod, cartItems } = req.body;
+
+    // Перевірка обов’язкових полів
+    if (!deliveryAddress || !telephone || !paymentMethod || !cartItems) {
+      return res.status(400).json({ error: "Всі поля є обов’язковими" });
+    }
+
+    // Створюємо нове замовлення для гостя
+    const [newOrder] = await db
+      .insert(orders)
+      .values({
+        userId: null, // Гість
+        orderStatusId: 2, // "Оформлено"
+        deliveryAddress,
+        telephone,
+        paymentMethod,
+        lastUpdated: new Date(),
+      })
+      .returning({ orderId: orders.orderId });
+
+    const orderId = newOrder.orderId;
+
+    // Додаємо товари з кошика до замовлення
+    for (const item of cartItems) {
+      const { articleNumber, size, quantity } = item;
+
+      // Перевіряємо наявність товару
+      const productSize = await db
+        .select()
+        .from(productSizes)
+        .where(
+          and(
+            eq(productSizes.articleNumber, articleNumber),
+            eq(productSizes.size, size)
+          )
+        )
+        .limit(1);
+
+      if (!productSize.length || productSize[0].stock < quantity) {
+        return res.status(400).json({
+          error: `Недостатньо товару ${articleNumber} розміру ${size}`,
+        });
+      }
+
+      // Додаємо товар до замовлення
+      await db.insert(orderItems).values({
+        orderId,
+        articleNumber,
+        size,
+        quantity,
+      });
+
+      // Оновлюємо запаси
+      await db
+        .update(productSizes)
+        .set({ stock: productSize[0].stock - quantity })
+        .where(
+          and(
+            eq(productSizes.articleNumber, articleNumber),
+            eq(productSizes.size, size)
+          )
+        );
+    }
+
+    res.status(201).json({ message: "Замовлення оформлено успішно", orderId });
+  } catch (error) {
+    console.error("Помилка оформлення замовлення:", error);
+    res.status(500).json({ error: "Помилка сервера" });
   }
 });
 
@@ -1231,39 +1629,76 @@ app.get("/order-items/history", authenticate, async (req, res, next) => {
 });
 
 // GET /order-items – отримання позицій замовлення користувача
-app.get("/order-items", authenticate, async (req, res, next) => {
+app.get("/order-items", optionalAuth, async (req, res, next) => {
   try {
-    const { userId } = req.user;
-    const userOrderItems = await db
-      .select({
-        productOrderId: orderItems.productOrderId,
-        orderId: orderItems.orderId,
-        articleNumber: orderItems.articleNumber,
-        size: orderItems.size,
-        quantity: orderItems.quantity,
-        name: products.name,
-        imageUrls: products.imageUrls,
-      })
-      .from(orderItems)
-      .innerJoin(orders, eq(orderItems.orderId, orders.orderId))
-      .leftJoin(products, eq(orderItems.articleNumber, products.articleNumber))
-      .where(
-        and(
-          eq(orders.userId, userId),
-          eq(orders.orderStatusId, 1) // Фільтруємо лише замовлення зі статусом "В кошику"
+    if (req.user) {
+      const { userId } = req.user;
+      // З'єднуємо orderItems з orders та products, щоб отримати деталі про товари
+      const userOrderItems = await db
+        .select({
+          productOrderId: orderItems.productOrderId,
+          orderId: orderItems.orderId,
+          articleNumber: orderItems.articleNumber,
+          size: orderItems.size,
+          quantity: orderItems.quantity,
+          name: products.name,
+          imageUrls: products.imageUrls,
+          price: products.price,
+          discount: products.discount,
+          // Якщо необхідно, можна додати додаткові поля (наприклад, розміри)
+        })
+        .from(orderItems)
+        .innerJoin(orders, eq(orderItems.orderId, orders.orderId))
+        .leftJoin(
+          products,
+          eq(orderItems.articleNumber, products.articleNumber)
         )
+        .where(
+          and(
+            eq(orders.userId, userId),
+            eq(orders.orderStatusId, 1) // Активний кошик
+          )
+        );
+      return res.json(userOrderItems);
+    } else {
+      // Для гостей дані беруться із сесії, але ми їх збагачуємо даними з products
+      const sessionCart = req.session.cart || [];
+      const cartWithDetails = await Promise.all(
+        sessionCart.map(async (item) => {
+          const product = await fetchOne(
+            db
+              .select({
+                articleNumber: products.articleNumber,
+                name: products.name,
+                price: products.price,
+                discount: products.discount,
+                imageUrls: products.imageUrls,
+              })
+              .from(products)
+              .where(eq(products.articleNumber, item.articleNumber))
+              .limit(1)
+          );
+          return {
+            ...item,
+            name: product?.name || "Невідомий товар",
+            imageUrls: product?.imageUrls || [],
+            price: product?.price || 0,
+            discount: product?.discount || 0,
+          };
+        })
       );
-    res.json(userOrderItems);
+      return res.json(cartWithDetails);
+    }
   } catch (error) {
     console.error("Error fetching order items:", error);
     next(createError(500, "Failed to fetch order items"));
   }
 });
+
 // POST /order-items – додавання позиції замовлення
-app.post("/order-items", authenticate, async (req, res, next) => {
+app.post("/order-items", optionalAuth, async (req, res, next) => {
   try {
     const { articleNumber, size, quantity } = req.body;
-    const { userId } = req.user;
 
     if (!articleNumber || !size || quantity === undefined) {
       return next(
@@ -1271,7 +1706,6 @@ app.post("/order-items", authenticate, async (req, res, next) => {
       );
     }
 
-    // Перевірка наявності товару
     const productSize = await db
       .select()
       .from(productSizes)
@@ -1301,43 +1735,52 @@ app.post("/order-items", authenticate, async (req, res, next) => {
       );
     }
 
-    // Знаходимо активний ордер (orderStatusId = 1)
-    let currentOrder = await fetchOne(
-      db
-        .select({ orderId: orders.orderId })
-        .from(orders)
-        .where(eq(orders.userId, userId))
-        .where(eq(orders.orderStatusId, 1))
-        .limit(1)
-    );
+    let orderId;
 
-    if (!currentOrder) {
-      const newOrder = await fetchOne(
+    if (req.user) {
+      // Для авторизованих користувачів – обробка кошика в БД
+      const userId = req.user.userId;
+      let currentOrder = await fetchOne(
         db
-          .insert(orders)
-          .values({ userId, orderStatusId: 1, lastUpdated: new Date() })
-          .returning({ orderId: orders.orderId })
+          .select({ orderId: orders.orderId })
+          .from(orders)
+          .where(and(eq(orders.userId, userId), eq(orders.orderStatusId, 1)))
+          .limit(1)
       );
-      currentOrder = newOrder;
+
+      if (!currentOrder) {
+        const newOrder = await fetchOne(
+          db
+            .insert(orders)
+            .values({ userId, orderStatusId: 1, lastUpdated: new Date() })
+            .returning({ orderId: orders.orderId })
+        );
+        currentOrder = newOrder;
+      } else {
+        await db
+          .update(orders)
+          .set({ lastUpdated: new Date() })
+          .where(eq(orders.orderId, currentOrder.orderId));
+      }
+      orderId = currentOrder.orderId;
+
+      const newOrderItem = await db
+        .insert(orderItems)
+        .values({
+          orderId,
+          articleNumber,
+          size,
+          quantity,
+        })
+        .returning();
+
+      res.status(201).json(newOrderItem[0]);
     } else {
-      await db
-        .update(orders)
-        .set({ lastUpdated: new Date() })
-        .where(eq(orders.orderId, currentOrder.orderId));
+      // Для гостей – збереження у сесії
+      req.session.cart = req.session.cart || [];
+      req.session.cart.push({ articleNumber, size, quantity });
+      return res.status(201).json({ message: "Товар додано до кошика" });
     }
-
-    // Додаємо orderItem
-    const newOrderItem = await db
-      .insert(orderItems)
-      .values({
-        orderId: currentOrder.orderId,
-        articleNumber,
-        size,
-        quantity,
-      })
-      .returning();
-
-    res.status(201).json(newOrderItem[0]);
   } catch (error) {
     console.error("Error adding order item:", error);
     next(createError(500, "Error adding item to cart"));
@@ -1464,77 +1907,120 @@ app.get("/order-items/count", authenticate, async (req, res, next) => {
 
 //-------------------------------------------------------FAVORITES----------------------------------------------------------------------
 
-app.post("/favorites", authenticate, async (req, res, next) => {
+app.post("/favorites", optionalAuth, async (req, res) => {
   try {
     const { articleNumber } = req.body;
-    const { userId } = req.user;
 
     if (!articleNumber) {
-      return next(createError(400, "Поле articleNumber є обов'язковим"));
+      return res.status(400).json({ error: "articleNumber обов’язковий" });
     }
 
-    const existingFavorite = await fetchOne(
-      db
+    if (req.user) {
+      // Для авторизованих користувачів – операції з БД
+      const { userId } = req.user;
+      const existingFavorite = await db
         .select()
         .from(favorites)
-        .where(eq(favorites.userId, userId))
-        .where(eq(favorites.articleNumber, articleNumber))
-        .limit(1)
-    );
+        .where(
+          and(
+            eq(favorites.userId, userId),
+            eq(favorites.articleNumber, articleNumber)
+          )
+        )
+        .limit(1);
 
-    if (existingFavorite) {
-      return next(createError(400, "Цей товар вже в улюблених"));
+      if (existingFavorite.length) {
+        return res.status(400).json({ error: "Товар уже в улюблених" });
+      }
+
+      const newFavorite = await db
+        .insert(favorites)
+        .values({ userId, articleNumber })
+        .returning();
+      return res.status(201).json(newFavorite[0]);
+    } else {
+      // Для гостей – збереження у сесії
+      req.session.favorites = req.session.favorites || [];
+      if (req.session.favorites.includes(articleNumber)) {
+        return res.status(400).json({ error: "Товар уже в улюблених" });
+      }
+      req.session.favorites.push(articleNumber);
+      return res.status(201).json({ message: "Товар додано до улюблених" });
     }
-
-    const newFavorite = await db
-      .insert(favorites)
-      .values({
-        userId,
-        articleNumber,
-      })
-      .returning();
-
-    res.status(201).json(newFavorite[0]);
   } catch (error) {
-    console.error("Помилка додавання в улюблені:", error);
-    next(createError(500, "Сталася внутрішня помилка сервера"));
+    console.error("Помилка:", error);
+    res.status(500).json({ error: "Помилка сервера" });
   }
 });
 
-app.get("/favorites", authenticate, async (req, res, next) => {
+// Використовуємо optionalAuth для підтримки як авторизованих, так і гостей
+app.get("/favorites", optionalAuth, async (req, res) => {
   try {
-    const { userId } = req.user;
-    const userFavorites = await db
-      .select({
-        articleNumber: favorites.articleNumber,
-      })
-      .from(favorites)
-      .where(eq(favorites.userId, userId));
+    if (req.user) {
+      const { userId } = req.user;
+      // Отримуємо базові дані товару із favorites і products
+      const userFavorites = await db
+        .select({
+          articleNumber: favorites.articleNumber,
+          name: products.name,
+          price: products.price,
+          discount: products.discount,
+          imageUrls: products.imageUrls,
+        })
+        .from(favorites)
+        .leftJoin(products, eq(favorites.articleNumber, products.articleNumber))
+        .where(eq(favorites.userId, userId));
 
-    // Отримання даних про кожен товар
-    const favoriteProducts = await Promise.all(
-      userFavorites.map(async (favorite) => {
-        const product = await fetchOne(
-          db
+      // Для кожного товару отримуємо розміри з productSizes
+      const enrichedFavorites = await Promise.all(
+        userFavorites.map(async (fav) => {
+          const sizes = await db
             .select({
-              articleNumber: products.articleNumber,
-              name: products.name,
-              price: products.price,
-              discount: products.discount,
-              imageUrls: products.imageUrls,
+              size: productSizes.size,
+              stock: productSizes.stock,
             })
-            .from(products)
-            .where(eq(products.articleNumber, favorite.articleNumber))
-            .limit(1)
-        );
-        return product ? { ...product } : null;
-      })
-    );
-
-    res.json(favoriteProducts.filter(Boolean));
+            .from(productSizes)
+            .where(eq(productSizes.articleNumber, fav.articleNumber));
+          return { ...fav, sizes };
+        })
+      );
+      return res.json(enrichedFavorites);
+    } else {
+      // Для гостей отримуємо articleNumber з сесії та збагачуємо даними з products
+      const sessionFavorites = req.session.favorites || [];
+      const enrichedFavorites = await Promise.all(
+        sessionFavorites.map(async (articleNumber) => {
+          const product = await fetchOne(
+            db
+              .select({
+                articleNumber: products.articleNumber,
+                name: products.name,
+                price: products.price,
+                discount: products.discount,
+                imageUrls: products.imageUrls,
+              })
+              .from(products)
+              .where(eq(products.articleNumber, articleNumber))
+              .limit(1)
+          );
+          if (product) {
+            const sizes = await db
+              .select({
+                size: productSizes.size,
+                stock: productSizes.stock,
+              })
+              .from(productSizes)
+              .where(eq(productSizes.articleNumber, articleNumber));
+            return { ...product, sizes };
+          }
+          return { articleNumber, sizes: [] };
+        })
+      );
+      return res.json(enrichedFavorites);
+    }
   } catch (error) {
-    console.error("Помилка отримання улюблених товарів:", error);
-    next(createError(500, "Не вдалося отримати улюблені товари"));
+    console.error("Помилка при отриманні улюблених товарів:", error);
+    res.status(500).json({ error: "Помилка сервера" });
   }
 });
 
@@ -2108,7 +2594,7 @@ app.get("/generate-report", authenticate, async (req, res, next) => {
   }
 });
 
-app.get("/admin/orders", authenticate,  async (req, res, next) => {
+app.get("/admin/orders", authenticate, async (req, res, next) => {
   try {
     const allOrders = await db
       .select({
@@ -2134,50 +2620,57 @@ app.get("/admin/orders", authenticate,  async (req, res, next) => {
   }
 });
 
-app.get(
-  "/admin/orders/:orderId",
-  authenticate,
-  
-  async (req, res, next) => {
-    try {
-      const { orderId } = req.params;
-      const order = await fetchOne(
-        db
-          .select({
-            orderId: orders.orderId,
-            userId: orders.userId,
-            orderStatusId: orders.orderStatusId,
-            orderDate: orders.orderDate,
-            deliveryAddress: orders.deliveryAddress,
-            telephone: orders.telephone,
-            paymentMethod: orders.paymentMethod,
-            userEmail: users.email,
-            statusName: orderStatus.name,
-          })
-          .from(orders)
-          .leftJoin(users, eq(orders.userId, users.userId))
-          .leftJoin(
-            orderStatus,
-            eq(orders.orderStatusId, orderStatus.orderStatusId)
-          )
-          .where(eq(orders.orderId, Number(orderId)))
-      );
-      if (!order) return next(createError(404, "Замовлення не знайдено"));
-      const items = await db
-        .select()
-        .from(orderItems)
-        .where(eq(orderItems.orderId, Number(orderId)));
-      res.json({ ...order, items });
-    } catch (error) {
-      next(createError(500, "Не вдалося отримати деталі замовлення"));
-    }
+app.get("/admin/orders/:orderId", authenticate, async (req, res, next) => {
+  try {
+    const { orderId } = req.params;
+    // Завантаження загальних даних замовлення
+    const order = await fetchOne(
+      db
+        .select({
+          orderId: orders.orderId,
+          userId: orders.userId,
+          orderStatusId: orders.orderStatusId,
+          orderDate: orders.orderDate,
+          deliveryAddress: orders.deliveryAddress,
+          telephone: orders.telephone,
+          paymentMethod: orders.paymentMethod,
+          userEmail: users.email,
+          statusName: orderStatus.name,
+        })
+        .from(orders)
+        .leftJoin(users, eq(orders.userId, users.userId))
+        .leftJoin(
+          orderStatus,
+          eq(orders.orderStatusId, orderStatus.orderStatusId)
+        )
+        .where(eq(orders.orderId, Number(orderId)))
+    );
+    if (!order) return next(createError(404, "Замовлення не знайдено"));
+
+    // Отримання деталей замовлення з JOIN до products для отримання ціни
+    const items = await db
+      .select({
+        orderItemId: orderItems.productOrderId,
+        orderId: orderItems.orderId,
+        articleNumber: orderItems.articleNumber,
+        size: orderItems.size,
+        quantity: orderItems.quantity,
+        price: products.price, // беремо ціну з таблиці products
+      })
+      .from(orderItems)
+      .leftJoin(products, eq(orderItems.articleNumber, products.articleNumber))
+      .where(eq(orderItems.orderId, Number(orderId)));
+    res.json({ ...order, items });
+  } catch (error) {
+    console.error("Error fetching order details:", error);
+    next(createError(500, "Не вдалося отримати деталі замовлення"));
   }
-);
+});
 
 app.put(
   "/admin/orders/:orderId",
   authenticate,
-  
+
   async (req, res, next) => {
     try {
       const { orderId } = req.params;
@@ -2200,7 +2693,7 @@ app.put(
 app.delete(
   "/admin/orders/:orderId",
   authenticate,
-  
+
   async (req, res, next) => {
     try {
       const { orderId } = req.params;
@@ -2219,7 +2712,7 @@ app.delete(
 
 // --- Управління коментарями ---
 
-app.get("/admin/reviews", authenticate,  async (req, res, next) => {
+app.get("/admin/reviews", authenticate, async (req, res, next) => {
   try {
     const allReviews = await db
       .select({
@@ -2244,7 +2737,7 @@ app.get("/admin/reviews", authenticate,  async (req, res, next) => {
 app.put(
   "/admin/reviews/:reviewId",
   authenticate,
-  
+
   async (req, res, next) => {
     try {
       const { reviewId } = req.params;
@@ -2265,7 +2758,7 @@ app.put(
 app.delete(
   "/admin/reviews/:reviewId",
   authenticate,
-  
+
   async (req, res, next) => {
     try {
       const { reviewId } = req.params;
@@ -2284,7 +2777,7 @@ app.delete(
 
 // --- Управління користувачами ---
 
-app.get("/admin/users", authenticate,  async (req, res, next) => {
+app.get("/admin/users", authenticate, async (req, res, next) => {
   try {
     const allUsers = await db
       .select({
@@ -2305,7 +2798,7 @@ app.get("/admin/users", authenticate,  async (req, res, next) => {
 app.put(
   "/admin/users/:userId",
   authenticate,
-  
+
   async (req, res, next) => {
     try {
       const { userId } = req.params;
@@ -2327,7 +2820,7 @@ app.put(
 app.delete(
   "/admin/users/:userId",
   authenticate,
-  
+
   async (req, res, next) => {
     try {
       const { userId } = req.params;
