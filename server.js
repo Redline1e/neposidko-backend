@@ -8,7 +8,7 @@ import path from "path";
 import fs from "fs/promises";
 import multer from "multer";
 import { db } from "./db/index.js";
-import { eq, ilike, and, or, lt, gt } from "drizzle-orm";
+import { eq, ilike, and, or, lt, gt, sql } from "drizzle-orm";
 import { fileURLToPath } from "url";
 import { authenticate } from "./middleware/auth.js";
 import cron from "node-cron";
@@ -2533,6 +2533,49 @@ app.post("/upload-excel", uploadExcel.single("file"), async (req, res) => {
 });
 
 //---------------------------------------------------------------------------------------------------------------------------------------
+
+app.get("/favorites/count", authenticate, async (req, res, next) => {
+  try {
+    const { userId } = req.user;
+    const countResult = await db
+      .select({ count: db.fn.count(favorites.favoriteId) })
+      .from(favorites)
+      .where(eq(favorites.userId, userId));
+    const count = countResult[0].count || 0;
+    res.json({ count });
+  } catch (error) {
+    console.error("Помилка підрахунку улюблених товарів:", error);
+    next(createError(500, "Не вдалося отримати кількість улюблених товарів"));
+  }
+});
+app.get("/order-items/count", authenticate, async (req, res, next) => {
+  try {
+    const { userId } = req.user;
+    const currentOrder = await fetchOne(
+      db
+        .select({ orderId: orders.orderId })
+        .from(orders)
+        .where(
+          and(eq(orders.userId, userId), eq(orders.orderStatusId, 1)) // 1 = активний кошик
+        )
+        .limit(1)
+    );
+
+    if (!currentOrder) {
+      return res.json({ count: 0 });
+    }
+
+    const countResult = await db
+      .select({ count: db.fn.count(orderItems.productOrderId) })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, currentOrder.orderId));
+    const count = countResult[0].count || 0;
+    res.json({ count });
+  } catch (error) {
+    console.error("Помилка підрахунку товарів у кошику:", error);
+    next(createError(500, "Не вдалося отримати кількість товарів у кошику"));
+  }
+});
 
 // Ендпоінт для генерації звіту з замовлень
 app.get("/generate-report", authenticate, async (req, res, next) => {
