@@ -141,6 +141,52 @@ router.post("/orders/checkout", optionalAuth, async (req, res, next) => {
   }
 });
 
+router.post("/orders/guest-checkout", async (req, res) => {
+  try {
+    const { deliveryAddress, telephone, paymentMethod, cartItems } = req.body;
+
+    // Перевірка обов'язкових полів
+    if (!deliveryAddress || !telephone || !paymentMethod || !cartItems) {
+      return res.status(400).json({ message: "Усі поля обов'язкові" });
+    }
+
+    // Створення нового замовлення для гостя
+    const [newOrder] = await db
+      .insert(orders)
+      .values({
+        userId: null, // Для гостей userId буде null
+        orderStatusId: 2, // Припускаємо, що 2 — це статус "Нове замовлення"
+        deliveryAddress,
+        telephone,
+        paymentMethod,
+        orderDate: new Date(),
+        lastUpdated: new Date(),
+      })
+      .returning({ orderId: orders.orderId });
+
+    const orderId = newOrder.orderId;
+
+    // Додавання товарів до замовлення
+    for (const item of cartItems) {
+      const { articleNumber, size, quantity } = item;
+      await db.insert(orderItems).values({
+        orderId,
+        articleNumber,
+        size,
+        quantity,
+      });
+    }
+
+    res.status(201).json({
+      message: "Замовлення оформлено успішно",
+      orderId,
+    });
+  } catch (error) {
+    console.error("Помилка оформлення замовлення для гостя:", error);
+    res.status(500).json({ message: "Помилка оформлення замовлення" });
+  }
+});
+
 router.get("/orders/history", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;

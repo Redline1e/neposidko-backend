@@ -19,35 +19,64 @@ export const authenticate = async (req, res, next) => {
   }
 };
 
+// middleware/auth.js
 export const authenticateAdmin = async (req, res, next) => {
   try {
+    console.log("\n=== Новий запит ===");
+    console.log("Метод:", req.method);
+    console.log("URL:", req.originalUrl);
+    console.log("Заголовки:", JSON.stringify(req.headers, null, 2));
+
     const authHeader = req.headers.authorization;
-    if (!authHeader) return next(createError(401, "Неавторизований"));
 
-    const token = authHeader.split(" ")[1];
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await fetchOne(
-      db
-        .select({ roleId: users.roleId })
-        .from(users)
-        .where(eq(users.userId, decoded.userId))
-        .limit(1)
-    );
-    if (!user) return next(createError(404, "Користувача не знайдено"));
+    if (!authHeader) {
+      console.error("Помилка: Відсутній заголовок Authorization");
+      return next(createError(401, "Неавторизований"));
+    }
 
-    const role = await fetchOne(
-      db
-        .select({ name: roles.name })
-        .from(roles)
-        .where(eq(roles.roleId, user.roleId))
-        .limit(1)
-    );
-    if (role.name !== "admin") return next(createError(403, "Заборонено"));
+    const [bearer, token] = authHeader.split(" ");
 
-    req.user = { userId: decoded.userId, role: role.name };
-    next();
+    if (bearer.toLowerCase() !== "bearer" || !token) {
+      console.error("Помилка: Невірний формат заголовка");
+      return next(createError(401, "Невірний формат токена"));
+    }
+
+    console.log("Отриманий токен:", token);
+
+    try {
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      console.log("Декодований токен:", decoded);
+
+      const user = await db.query.users.findFirst({
+        where: eq(users.userId, decoded.userId),
+        columns: { roleId: true },
+      });
+
+      if (!user) {
+        console.error("Користувач не знайдений");
+        return next(createError(404, "Користувача не знайдено"));
+      }
+
+      const role = await db.query.roles.findFirst({
+        where: eq(roles.roleId, user.roleId),
+      });
+
+      console.log("Знайдена роль:", role);
+
+      if (!role || role.name.toLowerCase() !== "admin") {
+        console.error("Недостатньо прав. Роль:", role?.name);
+        return next(createError(403, "Заборонено"));
+      }
+
+      req.user = { userId: decoded.userId, role: role.name };
+      next();
+    } catch (jwtError) {
+      console.error("Помилка JWT:", jwtError);
+      next(createError(401, "Недійсний токен"));
+    }
   } catch (error) {
-    next(createError(401, "Недійсний токен"));
+    console.error("Загальна помилка авторизації:", error);
+    next(createError(500, "Внутрішня помилка сервера"));
   }
 };
 

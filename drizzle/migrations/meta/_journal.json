@@ -5,36 +5,8 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1742555874389,
-      "tag": "0000_redundant_fallen_one",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "7",
-      "when": 1743257865075,
-      "tag": "0001_spicy_mongu",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1743258906745,
-      "tag": "0002_charming_puck",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1743259584207,
-      "tag": "0003_careful_speedball",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1743261576989,
-      "tag": "0004_needy_firestar",
+      "when": 1743622809454,
+      "tag": "0000_same_franklin_richards",
       "breakpoints": true
     }
   ]

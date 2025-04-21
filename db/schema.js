@@ -5,6 +5,7 @@ import {
   integer,
   boolean,
   timestamp,
+  uuid,
 } from "drizzle-orm/pg-core";
 
 // Roles table
@@ -15,7 +16,7 @@ export const roles = pgTable("roles", {
 
 // Users table
 export const users = pgTable("users", {
-  userId: serial("userId").primaryKey(),
+  userId: uuid("userId").primaryKey(),
   roleId: integer("roleId")
     .references(() => roles.roleId, { onDelete: "cascade" })
     .notNull(),
@@ -35,7 +36,8 @@ export const orderStatus = pgTable("orderStatus", {
 // Orders table
 export const orders = pgTable("orders", {
   orderId: serial("orderId").primaryKey(),
-  userId: integer("userId").references(() => users.userId, {
+  // Змінено тип на uuid, щоб відповідати users.userId
+  userId: uuid("userId").references(() => users.userId, {
     onDelete: "cascade",
   }),
   orderStatusId: integer("orderStatusId").references(
@@ -82,7 +84,8 @@ export const productSizes = pgTable("productSizes", {
 // Reviews table
 export const reviews = pgTable("reviews", {
   reviewId: serial("reviewId").primaryKey(),
-  userId: integer("userId").references(() => users.userId, {
+  // Змінено тип на uuid
+  userId: uuid("userId").references(() => users.userId, {
     onDelete: "cascade",
   }),
   articleNumber: text("articleNumber").references(
@@ -129,7 +132,8 @@ export const productCategories = pgTable("productCategories", {
 // Favorites table
 export const favorites = pgTable("favorites", {
   favoriteId: serial("favoriteId").primaryKey(),
-  userId: integer("userId")
+  // Змінено тип на uuid
+  userId: uuid("userId")
     .references(() => users.userId, { onDelete: "cascade" })
     .notNull(),
   articleNumber: text("articleNumber")

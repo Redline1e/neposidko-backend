@@ -17,6 +17,7 @@ const router = express.Router();
 
 router.get("/products", async (req, res, next) => {
   try {
+    // Отримання даних товару з пов’язаними полями
     const allProducts = await db
       .select({
         articleNumber: products.articleNumber,
@@ -42,6 +43,7 @@ router.get("/products", async (req, res, next) => {
         eq(productCategories.categoryId, categories.categoryId)
       );
 
+    // Отримання розмірів для кожного товару
     const articleNumbers = allProducts.map((p) => p.articleNumber);
     const allSizes =
       articleNumbers.length > 0
@@ -64,6 +66,7 @@ router.get("/products", async (req, res, next) => {
 
     res.json(productsWithSizes);
   } catch (error) {
+    console.error("Error in GET /products:", error);
     next(createError(500, "Не вдалося отримати продукти"));
   }
 });
@@ -127,13 +130,11 @@ router.post(
           .returning();
         newProduct = insertedProduct;
 
-        await tx
-          .insert(productCategories)
-          .values({
-            articleNumber,
-            categoryId: Number(categoryId),
-            imageUrl: imageUrls[0],
-          });
+        await tx.insert(productCategories).values({
+          articleNumber,
+          categoryId: Number(categoryId),
+          imageUrl: imageUrls[0],
+        });
 
         const parsedSizes = sizes ? JSON.parse(sizes) : [];
         if (Array.isArray(parsedSizes)) {
@@ -206,6 +207,7 @@ router.get("/products/active", async (req, res, next) => {
 
     res.json(productsWithSizes);
   } catch (error) {
+    console.error(error); // Додаткове логування помилки для налагодження
     next(createError(500, "Не вдалося отримати активні продукти"));
   }
 });
@@ -299,25 +301,42 @@ router.get("/product/:articleNumber", async (req, res, next) => {
           discount: products.discount,
           description: products.description,
           imageUrls: products.imageUrls,
-          brand: brands.name,
+          brand: brands.name, // Отримуємо назву бренду
+          brandId: products.brandId,
+          category: categories.name, // Отримуємо назву категорії через JOIN
+          categoryId: categories.categoryId,
           isActive: products.isActive,
         })
         .from(products)
         .leftJoin(brands, eq(products.brandId, brands.brandId))
+        .leftJoin(
+          productCategories,
+          eq(products.articleNumber, productCategories.articleNumber)
+        )
+        .leftJoin(
+          categories,
+          eq(productCategories.categoryId, categories.categoryId)
+        )
         .where(eq(products.articleNumber, articleNumber))
         .limit(1)
     );
 
-    if (!product || !product.isActive)
+    if (!product || !product.isActive) {
       return next(createError(404, "Продукт не знайдено"));
+    }
 
+    // Отримуємо розміри для цього товару
     const sizes = await db
-      .select({ size: productSizes.size, stock: productSizes.stock })
+      .select({
+        size: productSizes.size,
+        stock: productSizes.stock,
+      })
       .from(productSizes)
       .where(eq(productSizes.articleNumber, articleNumber));
 
     res.json({ ...product, sizes });
   } catch (error) {
+    console.error("Error in GET /product/:articleNumber:", error);
     next(createError(500, "Не вдалося отримати дані продукту"));
   }
 });

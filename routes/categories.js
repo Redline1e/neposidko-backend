@@ -34,21 +34,34 @@ router.post(
   uploadSingleImage,
   async (req, res, next) => {
     try {
-      const { name } = req.body;
-      const file = req.file;
-      if (!name || !file)
-        return next(createError(400, "Назва та зображення обов'язкові"));
+      const { name } = req.body; // Назва категорії
+      const file = req.file; // Завантажений файл
 
+      if (!name || !file) {
+        if (file) await deleteFiles([file]); // Видалити файл, якщо він був завантажений
+        return next(createError(400, "Назва та зображення обов'язкові"));
+      }
+
+      // Перевірка формату файлу (додатково)
+      if (!file.mimetype.startsWith("image/")) {
+        await deleteFiles([file]);
+        return next(createError(400, "Файл має бути зображенням"));
+      }
+
+      // Генерація URL для зображення
       const imageUrl = `${req.protocol}://${req.get("host")}/images/${
         file.filename
       }`;
+
+      // Вставка в базу даних
       const [newCategory] = await db
         .insert(categories)
         .values({ name, imageUrl })
         .returning();
+
       res.status(201).json(newCategory);
     } catch (error) {
-      if (req.file) await deleteFiles([req.file]);
+      if (req.file) await deleteFiles([req.file]); // Видалити файл у разі помилки
       next(createError(500, "Не вдалося додати категорію"));
     }
   }

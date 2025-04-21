@@ -7,41 +7,72 @@ import { users, orders, orderItems, favorites } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
 import { fetchOne } from "../utils.js";
 import { authenticate } from "../middleware/auth.js";
+import { v4 as uuidv4 } from "uuid"; // Import the uuid function
 
 const router = express.Router();
 
 router.post("/register", async (req, res, next) => {
   console.log("=== Початок маршруту /register ===");
   try {
-    const { email, password, cart: clientCart, favorites: clientFavorites } = req.body;
-    if (!email || !password) return next(createError(400, "Усі поля обов'язкові!"));
+    const {
+      email,
+      password,
+      cart: clientCart,
+      favorites: clientFavorites,
+    } = req.body;
+    if (!email || !password)
+      return next(createError(400, "Усі поля обов'язкові!"));
 
     const sanitizedEmail = email.trim().toLowerCase();
     const name = sanitizedEmail.split("@")[0];
     const existingUser = await fetchOne(
-      db.select({ email: users.email }).from(users).where(eq(users.email, sanitizedEmail)).limit(1)
+      db
+        .select({ email: users.email })
+        .from(users)
+        .where(eq(users.email, sanitizedEmail))
+        .limit(1)
     );
     if (existingUser) return next(createError(409, "Користувач уже існує!"));
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const userId = uuidv4(); // Generate a new UUID for the user
     let newUser;
 
     await db.transaction(async (tx) => {
       const insertedUsers = await tx
         .insert(users)
-        .values({ name, email: sanitizedEmail, password: hashedPassword, roleId: 2 })
-        .returning({ userId: users.userId, name: users.name, email: users.email, roleId: users.roleId });
+        .values({
+          userId, // Include the generated userId
+          name,
+          email: sanitizedEmail,
+          password: hashedPassword,
+          roleId: 2,
+        })
+        .returning({
+          userId: users.userId,
+          name: users.name,
+          email: users.email,
+          roleId: users.roleId,
+        });
       newUser = insertedUsers[0];
 
+      // Process favorites from client or session
       if (clientFavorites && Array.isArray(clientFavorites)) {
         for (const articleNumber of clientFavorites) {
           const exists = await tx
             .select()
             .from(favorites)
-            .where(and(eq(favorites.userId, newUser.userId), eq(favorites.articleNumber, articleNumber)))
+            .where(
+              and(
+                eq(favorites.userId, newUser.userId),
+                eq(favorites.articleNumber, articleNumber)
+              )
+            )
             .limit(1);
           if (!exists.length) {
-            await tx.insert(favorites).values({ userId: newUser.userId, articleNumber });
+            await tx
+              .insert(favorites)
+              .values({ userId: newUser.userId, articleNumber });
           }
         }
       } else if (req.session.favorites?.length > 0) {
@@ -49,25 +80,39 @@ router.post("/register", async (req, res, next) => {
           const exists = await tx
             .select()
             .from(favorites)
-            .where(and(eq(favorites.userId, newUser.userId), eq(favorites.articleNumber, articleNumber)))
+            .where(
+              and(
+                eq(favorites.userId, newUser.userId),
+                eq(favorites.articleNumber, articleNumber)
+              )
+            )
             .limit(1);
           if (!exists.length) {
-            await tx.insert(favorites).values({ userId: newUser.userId, articleNumber });
+            await tx
+              .insert(favorites)
+              .values({ userId: newUser.userId, articleNumber });
           }
         }
         req.session.favorites = [];
       }
 
+      // Process cart from client or session
       if (clientCart && Array.isArray(clientCart)) {
         let currentOrder = await tx
           .select({ orderId: orders.orderId })
           .from(orders)
-          .where(and(eq(orders.userId, newUser.userId), eq(orders.orderStatusId, 1)))
+          .where(
+            and(eq(orders.userId, newUser.userId), eq(orders.orderStatusId, 1))
+          )
           .limit(1);
         if (!currentOrder.length) {
           const newOrder = await tx
             .insert(orders)
-            .values({ userId: newUser.userId, orderStatusId: 1, lastUpdated: new Date() })
+            .values({
+              userId: newUser.userId,
+              orderStatusId: 1,
+              lastUpdated: new Date(),
+            })
             .returning({ orderId: orders.orderId });
           currentOrder = newOrder;
         }
@@ -83,12 +128,18 @@ router.post("/register", async (req, res, next) => {
         let currentOrder = await tx
           .select({ orderId: orders.orderId })
           .from(orders)
-          .where(and(eq(orders.userId, newUser.userId), eq(orders.orderStatusId, 1)))
+          .where(
+            and(eq(orders.userId, newUser.userId), eq(orders.orderStatusId, 1))
+          )
           .limit(1);
         if (!currentOrder.length) {
           const newOrder = await tx
             .insert(orders)
-            .values({ userId: newUser.userId, orderStatusId: 1, lastUpdated: new Date() })
+            .values({
+              userId: newUser.userId,
+              orderStatusId: 1,
+              lastUpdated: new Date(),
+            })
             .returning({ orderId: orders.orderId });
           currentOrder = newOrder;
         }
@@ -104,7 +155,9 @@ router.post("/register", async (req, res, next) => {
       }
     });
 
-    const token = jwt.sign({ userId: newUser.userId }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    const token = jwt.sign({ userId: newUser.userId }, process.env.JWT_SECRET, {
+      expiresIn: "1h",
+    });
     res.status(201).json({ ...newUser, token });
   } catch (error) {
     console.error("Помилка реєстрації:", error);
@@ -115,12 +168,22 @@ router.post("/register", async (req, res, next) => {
 router.post("/login", async (req, res, next) => {
   console.log("=== Початок маршруту /login ===");
   try {
-    const { email, password, cart: clientCart, favorites: clientFavorites } = req.body;
-    if (!email || !password) return next(createError(400, "Усі поля обов'язкові!"));
+    const {
+      email,
+      password,
+      cart: clientCart,
+      favorites: clientFavorites,
+    } = req.body;
+    if (!email || !password)
+      return next(createError(400, "Усі поля обов'язкові!"));
 
     const sanitizedEmail = email.trim().toLowerCase();
     const user = await fetchOne(
-      db.select({ userId: users.userId, password: users.password }).from(users).where(eq(users.email, sanitizedEmail)).limit(1)
+      db
+        .select({ userId: users.userId, password: users.password })
+        .from(users)
+        .where(eq(users.email, sanitizedEmail))
+        .limit(1)
     );
     if (!user) return next(createError(404, "Користувача не знайдено!"));
 
@@ -133,10 +196,17 @@ router.post("/login", async (req, res, next) => {
           const exists = await tx
             .select()
             .from(favorites)
-            .where(and(eq(favorites.userId, user.userId), eq(favorites.articleNumber, articleNumber)))
+            .where(
+              and(
+                eq(favorites.userId, user.userId),
+                eq(favorites.articleNumber, articleNumber)
+              )
+            )
             .limit(1);
           if (!exists.length) {
-            await tx.insert(favorites).values({ userId: user.userId, articleNumber });
+            await tx
+              .insert(favorites)
+              .values({ userId: user.userId, articleNumber });
           }
         }
       } else if (req.session.favorites?.length > 0) {
@@ -144,10 +214,17 @@ router.post("/login", async (req, res, next) => {
           const exists = await tx
             .select()
             .from(favorites)
-            .where(and(eq(favorites.userId, user.userId), eq(favorites.articleNumber, articleNumber)))
+            .where(
+              and(
+                eq(favorites.userId, user.userId),
+                eq(favorites.articleNumber, articleNumber)
+              )
+            )
             .limit(1);
           if (!exists.length) {
-            await tx.insert(favorites).values({ userId: user.userId, articleNumber });
+            await tx
+              .insert(favorites)
+              .values({ userId: user.userId, articleNumber });
           }
         }
         req.session.favorites = [];
@@ -157,12 +234,18 @@ router.post("/login", async (req, res, next) => {
         let currentOrder = await tx
           .select({ orderId: orders.orderId })
           .from(orders)
-          .where(and(eq(orders.userId, user.userId), eq(orders.orderStatusId, 1)))
+          .where(
+            and(eq(orders.userId, user.userId), eq(orders.orderStatusId, 1))
+          )
           .limit(1);
         if (!currentOrder.length) {
           const newOrder = await tx
             .insert(orders)
-            .values({ userId: user.userId, orderStatusId: 1, lastUpdated: new Date() })
+            .values({
+              userId: user.userId,
+              orderStatusId: 1,
+              lastUpdated: new Date(),
+            })
             .returning({ orderId: orders.orderId });
           currentOrder = newOrder;
         }
@@ -178,12 +261,18 @@ router.post("/login", async (req, res, next) => {
         let currentOrder = await tx
           .select({ orderId: orders.orderId })
           .from(orders)
-          .where(and(eq(orders.userId, user.userId), eq(orders.orderStatusId, 1)))
+          .where(
+            and(eq(orders.userId, user.userId), eq(orders.orderStatusId, 1))
+          )
           .limit(1);
         if (!currentOrder.length) {
           const newOrder = await tx
             .insert(orders)
-            .values({ userId: user.userId, orderStatusId: 1, lastUpdated: new Date() })
+            .values({
+              userId: user.userId,
+              orderStatusId: 1,
+              lastUpdated: new Date(),
+            })
             .returning({ orderId: orders.orderId });
           currentOrder = newOrder;
         }
@@ -199,7 +288,9 @@ router.post("/login", async (req, res, next) => {
       }
     });
 
-    const token = jwt.sign({ userId: user.userId }, process.env.JWT_SECRET, { expiresIn: "1h" });
+    const token = jwt.sign({ userId: user.userId }, process.env.JWT_SECRET, {
+      expiresIn: "1h",
+    });
     res.json({ token });
   } catch (error) {
     console.error("Помилка авторизації:", error);
@@ -218,6 +309,7 @@ router.get("/protected", authenticate, async (req, res, next) => {
           email: users.email,
           telephone: users.telephone,
           deliveryAddress: users.deliveryAddress,
+          roleId: users.roleId, // <-- додано
         })
         .from(users)
         .where(eq(users.userId, userId))
@@ -233,7 +325,8 @@ router.get("/protected", authenticate, async (req, res, next) => {
 router.put("/user", authenticate, async (req, res, next) => {
   try {
     const { name, email, telephone, deliveryAddress } = req.body;
-    if (!name || !email) return next(createError(400, "Ім'я та email обов'язкові!"));
+    if (!name || !email)
+      return next(createError(400, "Ім'я та email обов'язкові!"));
     const { userId } = req.user;
     const updatedUsers = await db
       .update(users)
@@ -247,7 +340,8 @@ router.put("/user", authenticate, async (req, res, next) => {
         deliveryAddress: users.deliveryAddress,
         roleId: users.roleId,
       });
-    if (!updatedUsers.length) return next(createError(500, "Не вдалося оновити користувача"));
+    if (!updatedUsers.length)
+      return next(createError(500, "Не вдалося оновити користувача"));
     res.json(updatedUsers[0]);
   } catch (error) {
     next(error);
@@ -261,7 +355,8 @@ router.delete("/user", authenticate, async (req, res, next) => {
       .delete(users)
       .where(eq(users.userId, userId))
       .returning();
-    if (!deletedUser.length) return next(createError(404, "Користувача не знайдено"));
+    if (!deletedUser.length)
+      return next(createError(404, "Користувача не знайдено"));
     res.json({ message: "Користувача успішно видалено" });
   } catch (error) {
     next(error);
@@ -272,7 +367,11 @@ router.get("/getUserRole", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
     const user = await fetchOne(
-      db.select({ roleId: users.roleId }).from(users).where(eq(users.userId, userId)).limit(1)
+      db
+        .select({ roleId: users.roleId })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1)
     );
     if (!user) return next(createError(404, "Користувача не знайдено"));
     res.json({ roleId: user.roleId });
@@ -302,6 +401,25 @@ router.get("/user/:userId", authenticate, async (req, res, next) => {
     res.status(200).json(user);
   } catch (error) {
     next(error);
+  }
+});
+
+router.get("/public/user/:userId/name", async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const user = await fetchOne(
+      db
+        .select({
+          name: users.name,
+        })
+        .from(users)
+        .where(eq(users.userId, userId))
+        .limit(1)
+    );
+    if (!user) return next(createError(404, "Користувача не знайдено"));
+    res.status(200).json({ name: user.name });
+  } catch (error) {
+    next(createError(500, "Не вдалося отримати ім'я користувача"));
   }
 });
 

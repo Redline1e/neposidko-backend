@@ -207,7 +207,7 @@ router.put("/users/:userId", authenticateAdmin, async (req, res, next) => {
     const [updatedUser] = await db
       .update(users)
       .set({ name, email, roleId, telephone, deliveryAddress })
-      .where(eq(users.userId, Number(userId)))
+      .where(eq(users.userId, userId))
       .returning();
     if (!updatedUser) return next(createError(404, "Користувача не знайдено"));
     res.json(updatedUser);
@@ -215,13 +215,12 @@ router.put("/users/:userId", authenticateAdmin, async (req, res, next) => {
     next(createError(500, "Не вдалося оновити користувача"));
   }
 });
-
 router.delete("/users/:userId", authenticateAdmin, async (req, res, next) => {
   try {
     const { userId } = req.params;
     const deleted = await db
       .delete(users)
-      .where(eq(users.userId, Number(userId)))
+      .where(eq(users.userId, userId))
       .returning();
     if (!deleted.length)
       return next(createError(404, "Користувача не знайдено"));
@@ -352,12 +351,10 @@ router.post(
               log.skipped++;
             }
           } else {
-            await tx
-              .insert(categories)
-              .values({
-                name: category.name,
-                imageUrl: category.imageUrl || null,
-              });
+            await tx.insert(categories).values({
+              name: category.name,
+              imageUrl: category.imageUrl || null,
+            });
             log.added++;
           }
         }
@@ -473,13 +470,11 @@ router.post(
                   for (const sizeObj of sizes) {
                     const { size, stock } = sizeObj;
                     if (size && stock != null) {
-                      await tx
-                        .insert(productSizes)
-                        .values({
-                          articleNumber: product.articleNumber,
-                          size,
-                          stock: Number(stock),
-                        });
+                      await tx.insert(productSizes).values({
+                        articleNumber: product.articleNumber,
+                        size,
+                        stock: Number(stock),
+                      });
                     }
                   }
                 }
@@ -515,13 +510,11 @@ router.post(
                   for (const sizeObj of sizes) {
                     const { size, stock } = sizeObj;
                     if (size && stock != null) {
-                      await tx
-                        .insert(productSizes)
-                        .values({
-                          articleNumber: product.articleNumber,
-                          size,
-                          stock: Number(stock),
-                        });
+                      await tx.insert(productSizes).values({
+                        articleNumber: product.articleNumber,
+                        size,
+                        stock: Number(stock),
+                      });
                     }
                   }
                 }
