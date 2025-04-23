@@ -1,31 +1,47 @@
 import multer from "multer";
+import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const IMAGE_DIR = path.join(__dirname, "../public/images");
+// Визначення шляху для зберігання файлів
+const uploadDir = "/tmp/uploads";
 
+// Перевірка та створення директорії, якщо вона не існує
+if (!fs.existsSync(uploadDir)) {
+  try {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  } catch (err) {
+    console.error("Помилка при створенні директорії /tmp/uploads:", err);
+  }
+}
+
+// Налаштування зберігання файлів
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, IMAGE_DIR),
-  filename: (req, file, cb) => {
-    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    cb(null, `${uniqueSuffix}-${file.originalname}`);
+  destination: function (req, file, cb) {
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+    cb(
+      null,
+      file.fieldname + "-" + uniqueSuffix + path.extname(file.originalname)
+    );
   },
 });
 
-export const uploadImages = multer({
-  storage,
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith("image/")) {
-      cb(null, true);
-    } else {
-      cb(new Error("Дозволені тільки зображення"));
-    }
-  },
-  limits: { fileSize: 5 * 1024 * 1024 }, // Обмеження 5 МБ
+// Фільтр для типів файлів (опціонально)
+const fileFilter = (req, file, cb) => {
+  if (file.mimetype.startsWith("image/")) {
+    cb(null, true);
+  } else {
+    cb(new Error("Непідтримуваний тип файлу"), false);
+  }
+};
+
+// Ініціалізація multer
+const upload = multer({
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: { fileSize: 5 * 1024 * 1024 }, // Обмеження розміру файлу до 5MB
 });
 
-export const uploadSingleImage = uploadImages.single("image");
-export const uploadMultipleImages = uploadImages.array("images", 10);
-export const uploadExcel = multer({ dest: "uploads/" });
+export default upload;
