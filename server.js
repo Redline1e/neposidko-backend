@@ -85,6 +85,5 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(5000, () => {
-  console.log("Сервер запущено на порту 5000");
-});
+// Експорт для Vercel
+export default app;

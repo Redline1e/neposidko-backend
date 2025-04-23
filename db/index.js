@@ -5,10 +5,18 @@ import * as schema from "./schema.js";
 
 dotenv.config();
 
-const client = postgres(process.env.DATABASE_URL, {
-  prepare: false, // Вимикаємо prepared statements для режиму "Transaction" у Supabase
-  ssl: {
-    rejectUnauthorized: false, // Для Supabase це необхідно
-  },
-});
-export const db = drizzle(client, { schema });
+let db;
+
+try {
+  const client = postgres(process.env.DATABASE_URL, {
+    prepare: false,
+    ssl: { rejectUnauthorized: false },
+  });
+  db = drizzle(client, { schema }); 
+  console.log("Підключення до бази даних успішне");
+} catch (error) {
+  console.error("Помилка підключення до бази даних:", error);
+  throw error; 
+}
+
+export { db }; 
