@@ -282,7 +282,7 @@ router.get("/generate-report", authenticateAdmin, async (req, res, next) => {
 router.post(
   "/upload-excel",
   authenticateAdmin,
-  uploadExcel.single("file"),
+  uploadExcel,
   async (req, res, next) => {
     try {
       const file = req.file;

@@ -1,1 +1,41 @@
-.env*
+# Node dependencies
+node_modules/
+
+# Environment variables
+.env
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+npm-error.log*
+
+# Temporary files
+tmp/
+/tmp/
+/tmp/uploads/
+
+# Vercel
+.vercel/
+
+# Build output
+dist/
+build/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# IDE config
+.vscode/
+.idea/
+
+# Session storage (express-session)
+*.session
+
+# Coverage reports
+coverage/
+
+# Optional npm cache
+.cache/
