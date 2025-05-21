@@ -1,5 +1,5 @@
 # Node dependencies
-node_modules/
+node_modules
 
 # Environment variables
 .env
@@ -39,3 +39,4 @@ coverage/
 
 # Optional npm cache
 .cache/
+
