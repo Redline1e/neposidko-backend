@@ -45,7 +45,17 @@ app.use(
   })
 );
 
+// Статичні зображення
 app.use("/images", express.static(path.join(__dirname, "public", "images")));
+
+// Кореневий маршрут та health-check
+app.get("/", (req, res) => {
+  res.send("🟢 Сервер працює!");
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({ status: "OK", timestamp: Date.now() });
+});
 
 // Монтування маршрутів
 app.use(usersRouter);
