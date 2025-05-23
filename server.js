@@ -25,32 +25,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const allowedOrigins = [
-  "http://localhost:3000",
-  "https://neposidko-frontend.vercel.app",
-];
-
 // Налаштування CORS
 app.use(
   cors({
-    origin: (requestOrigin, callback) => {
-      if (!requestOrigin) return callback(null, true);
-
-      if (requestOrigin === "http://localhost:3000") {
-        return callback(null, true);
-      }
-
-      if (requestOrigin.startsWith("https://neposidko-frontend.vercel.app")) {
-        return callback(null, true);
-      }
-
-      callback(
-        new Error(`CORS policy violation: origin ${requestOrigin} not allowed`)
-      );
-    },
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    origin: process.env.FRONT_END_URL,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true, 
   })
 );
 
