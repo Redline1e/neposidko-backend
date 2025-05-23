@@ -33,9 +33,24 @@ const allowedOrigins = [
 // Налаштування CORS
 app.use(
   cors({
-    origin: allowedOrigins,
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    origin: (requestOrigin, callback) => {
+      if (!requestOrigin) return callback(null, true);
+
+      if (requestOrigin === "http://localhost:3000") {
+        return callback(null, true);
+      }
+
+      if (requestOrigin.startsWith("https://neposidko-frontend.vercel.app")) {
+        return callback(null, true);
+      }
+
+      callback(
+        new Error(`CORS policy violation: origin ${requestOrigin} not allowed`)
+      );
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true, 
   })
 );
 
