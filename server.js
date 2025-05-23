@@ -25,11 +25,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://neposidko-frontend.vercel.app",
+];
 
 // Налаштування CORS
 app.use(
   cors({
-    origin: process.env.FRONT_END_URL,
+    origin: allowedOrigins,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })

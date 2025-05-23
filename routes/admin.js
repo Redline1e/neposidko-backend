@@ -11,7 +11,7 @@ import {
 } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { authenticateAdmin } from "../middleware/auth.js";
-import { uploadExcel } from "../middleware/upload.js";
+import { uploadExcel } from "../middleware/uploadExcel.js";
 import xlsx from "xlsx";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -282,7 +282,7 @@ router.get("/generate-report", authenticateAdmin, async (req, res, next) => {
 router.post(
   "/upload-excel",
   authenticateAdmin,
-  uploadExcel,
+  uploadExcel.single("file"),
   async (req, res, next) => {
     try {
       const file = req.file;

@@ -4,8 +4,9 @@ import { db } from "../db/index.js";
 import { categories } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { authenticateAdmin } from "../middleware/auth.js";
-import { uploadSingleImage } from "../middleware/upload.js";
-import { fetchOne, deleteFiles } from "../utils.js";
+import { uploadSingleImageMemory } from "../middleware/uploadToSupabase.js";
+import { uploadToBucket } from "../utils/supabaseStorage.js";
+import { supabase } from "../supabaseClient.js";
 
 const router = express.Router();
 
@@ -31,38 +32,33 @@ router.get("/categories", async (req, res, next) => {
 router.post(
   "/categories",
   authenticateAdmin,
-  uploadSingleImage,
+  uploadSingleImageMemory,
   async (req, res, next) => {
     try {
-      const { name } = req.body; // Назва категорії
-      const file = req.file; // Завантажений файл
-
-      if (!name || !file) {
-        if (file) await deleteFiles([file]); // Видалити файл, якщо він був завантажений
+      const { name } = req.body;
+      if (!name || !req.file) {
         return next(createError(400, "Назва та зображення обов'язкові"));
       }
 
-      // Перевірка формату файлу (додатково)
-      if (!file.mimetype.startsWith("image/")) {
-        await deleteFiles([file]);
-        return next(createError(400, "Файл має бути зображенням"));
-      }
+      const publicUrl = await uploadToBucket(
+        req.file.buffer,
+        req.file.originalname
+      );
+      console.log(">>> Supabase publicUrl:", publicUrl);
 
-      // Генерація URL для зображення
-      const imageUrl = `${req.protocol}://${req.get("host")}/images/${
-        file.filename
-      }`;
-
-      // Вставка в базу даних
       const [newCategory] = await db
         .insert(categories)
-        .values({ name, imageUrl })
-        .returning();
+        .values({ name, imageUrl: publicUrl })
+        .returning({
+          categoryId: categories.categoryId,
+          name: categories.name,
+          imageUrl: categories.imageUrl,
+        });
 
+      console.log(">>> Inserted category:", newCategory);
       res.status(201).json(newCategory);
     } catch (error) {
-      if (req.file) await deleteFiles([req.file]); // Видалити файл у разі помилки
-      next(createError(500, "Не вдалося додати категорію"));
+      next(createError(500, error.message || "Не вдалося додати категорію"));
     }
   }
 );
@@ -70,36 +66,48 @@ router.post(
 router.put(
   "/categories/:categoryId",
   authenticateAdmin,
-  uploadSingleImage,
+  uploadSingleImageMemory,
   async (req, res, next) => {
     try {
       const { categoryId } = req.params;
       const { name } = req.body;
-      const file = req.file;
-      if (!name) return next(createError(400, "Назва категорії обов'язкова"));
 
-      let imageUrl = file
-        ? `${req.protocol}://${req.get("host")}/images/${file.filename}`
-        : (
-            await fetchOne(
-              db
-                .select({ imageUrl: categories.imageUrl })
-                .from(categories)
-                .where(eq(categories.categoryId, Number(categoryId)))
-            )
-          )?.imageUrl;
+      const old = await db
+        .select({ imageUrl: categories.imageUrl })
+        .from(categories)
+        .where(eq(categories.categoryId, Number(categoryId)))
+        .then((r) => r[0]);
+      if (!old) return next(createError(404, "Категорію не знайдено"));
 
-      const [updatedCategory] = await db
+      let newImageUrl = old.imageUrl;
+
+      if (req.file) {
+        // Видаляємо старе зображення
+        if (old.imageUrl) {
+          const oldKey = old.imageUrl.split("/").pop();
+          const { error: deleteError } = await supabase.storage
+            .from("images")
+            .remove([oldKey]);
+          if (deleteError) throw deleteError;
+        }
+
+        // Завантажуємо нове зображення
+        newImageUrl = await uploadToBucket(
+          req.file.buffer,
+          req.file.originalname
+        );
+      }
+
+      const [updated] = await db
         .update(categories)
-        .set({ name, imageUrl })
+        .set({ name, imageUrl: newImageUrl })
         .where(eq(categories.categoryId, Number(categoryId)))
         .returning();
-      if (!updatedCategory)
-        return next(createError(404, "Категорію не знайдено"));
-      res.json(updatedCategory);
-    } catch (error) {
-      if (req.file) await deleteFiles([req.file]);
-      next(createError(500, "Не вдалося оновити категорію"));
+      if (!updated) return next(createError(404, "Категорію не знайдено"));
+
+      res.json(updated);
+    } catch (err) {
+      next(createError(500, err.message || "Не вдалося оновити категорію"));
     }
   }
 );
@@ -110,26 +118,29 @@ router.delete(
   async (req, res, next) => {
     try {
       const { categoryId } = req.params;
-      const category = await fetchOne(
-        db
-          .select({ imageUrl: categories.imageUrl })
-          .from(categories)
-          .where(eq(categories.categoryId, Number(categoryId)))
-      );
-      if (!category) return next(createError(404, "Категорію не знайдено"));
 
-      if (category.imageUrl) await deleteFiles([category.imageUrl]);
-
-      const deleted = await db
-        .delete(categories)
+      const cat = await db
+        .select({ imageUrl: categories.imageUrl })
+        .from(categories)
         .where(eq(categories.categoryId, Number(categoryId)))
-        .returning();
-      if (!deleted.length)
-        return next(createError(404, "Категорію не знайдено"));
+        .then((r) => r[0]);
+      if (!cat) return next(createError(404, "Категорію не знайдено"));
 
-      res.json({ message: "Категорія успішно видалена" });
-    } catch (error) {
-      next(createError(500, "Не вдалося видалити категорію"));
+      if (cat.imageUrl) {
+        const key = cat.imageUrl.split("/").pop();
+        const { error: deleteError } = await supabase.storage
+          .from("images")
+          .remove([key]);
+        if (deleteError) throw deleteError;
+      }
+
+      await db
+        .delete(categories)
+        .where(eq(categories.categoryId, Number(categoryId)));
+
+      res.json({ message: "Категорія та зображення успішно видалені" });
+    } catch (err) {
+      next(createError(500, err.message || "Не вдалося видалити категорію"));
     }
   }
 );

@@ -3,7 +3,6 @@ import createError from "http-errors";
 import { db } from "../db/index.js";
 import { users, roles } from "../db/schema.js";
 import { eq } from "drizzle-orm";
-import { fetchOne } from "../utils.js";
 
 export const authenticate = async (req, res, next) => {
   try {

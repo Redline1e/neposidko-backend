@@ -10,15 +10,15 @@ import {
 } from "../db/schema.js";
 import { eq, ilike, or, inArray } from "drizzle-orm";
 import { authenticateAdmin } from "../middleware/auth.js";
-import { uploadMultipleImages } from "../middleware/upload.js";
-import { fetchOne, deleteFiles } from "../utils.js";
+import { uploadMultipleImagesMemory } from "../middleware/uploadToSupabase.js";
+import { uploadToBucket } from "../utils/supabaseStorage.js";
+import { supabase } from "../supabaseClient.js";
 
 const router = express.Router();
 
 router.get("/products", async (req, res, next) => {
   try {
-    // Отримання даних товару з пов’язаними полями
-    const allProducts = await db
+    const all = await db
       .select({
         articleNumber: products.articleNumber,
         name: products.name,
@@ -43,30 +43,25 @@ router.get("/products", async (req, res, next) => {
         eq(productCategories.categoryId, categories.categoryId)
       );
 
-    // Отримання розмірів для кожного товару
-    const articleNumbers = allProducts.map((p) => p.articleNumber);
-    const allSizes =
-      articleNumbers.length > 0
-        ? await db
-            .select({
-              articleNumber: productSizes.articleNumber,
-              size: productSizes.size,
-              stock: productSizes.stock,
-            })
-            .from(productSizes)
-            .where(inArray(productSizes.articleNumber, articleNumbers))
-        : [];
+    const ids = all.map((p) => p.articleNumber);
+    const sizes = ids.length
+      ? await db
+          .select({
+            articleNumber: productSizes.articleNumber,
+            size: productSizes.size,
+            stock: productSizes.stock,
+          })
+          .from(productSizes)
+          .where(inArray(productSizes.articleNumber, ids))
+      : [];
 
-    const productsWithSizes = allProducts.map((prod) => {
-      const sizes = allSizes.filter(
-        (s) => s.articleNumber === prod.articleNumber
-      );
-      return { ...prod, sizes };
-    });
-
-    res.json(productsWithSizes);
-  } catch (error) {
-    console.error("Error in GET /products:", error);
+    res.json(
+      all.map((p) => ({
+        ...p,
+        sizes: sizes.filter((s) => s.articleNumber === p.articleNumber),
+      }))
+    );
+  } catch {
     next(createError(500, "Не вдалося отримати продукти"));
   }
 });
@@ -74,11 +69,10 @@ router.get("/products", async (req, res, next) => {
 router.post(
   "/products",
   authenticateAdmin,
-  uploadMultipleImages,
+  uploadMultipleImagesMemory,
   async (req, res, next) => {
     try {
       const {
-        articleNumber,
         brandId,
         categoryId,
         price,
@@ -86,80 +80,262 @@ router.post(
         name,
         description,
         sizes,
+        articleNumber,
       } = req.body;
-      const files = req.files;
+      const imageFiles = req.files;
+
       if (
-        !articleNumber ||
         !brandId ||
         !categoryId ||
         !price ||
         !name ||
-        !description
+        !description ||
+        !articleNumber
       ) {
         return next(createError(400, "Усі поля обов'язкові"));
       }
-      if (!files || files.length === 0)
-        return next(createError(400, "Потрібно хоча б одне зображення"));
 
       const existingProduct = await db
         .select()
         .from(products)
         .where(eq(products.articleNumber, articleNumber))
         .limit(1);
-      if (existingProduct.length > 0)
-        return next(createError(409, "Товар з таким articleNumber уже існує"));
 
-      const imageUrls = files.map(
-        (file) => `${req.protocol}://${req.get("host")}/images/${file.filename}`
-      );
-      let newProduct;
+      if (existingProduct.length > 0) {
+        return next(createError(409, "Товар із таким артикулом уже існує"));
+      }
+
+      let imageUrls = [];
+      if (imageFiles && imageFiles.length > 0) {
+        imageUrls = await Promise.all(
+          imageFiles.map(async (file) =>
+            uploadToBucket(file.buffer, file.originalname)
+          )
+        );
+      }
+
+      imageUrls = imageUrls.filter((url) => url && typeof url === "string");
+
+      let sizesArr = [];
+      if (sizes) {
+        try {
+          sizesArr = JSON.parse(sizes);
+        } catch (error) {
+          return next(createError(400, "Некоректний формат sizes"));
+        }
+      }
 
       await db.transaction(async (tx) => {
-        const [insertedProduct] = await tx
-          .insert(products)
-          .values({
-            articleNumber,
-            brandId: Number(brandId),
-            price: Number(price),
-            discount: discount ? Number(discount) : 0,
-            name,
-            description,
-            imageUrls,
-            isActive: true,
-          })
-          .returning();
-        newProduct = insertedProduct;
+        await tx.insert(products).values({
+          articleNumber,
+          brandId: +brandId,
+          price: +price,
+          discount: discount ? +discount : 0,
+          name,
+          description,
+          imageUrls,
+          isActive: true,
+        });
 
         await tx.insert(productCategories).values({
           articleNumber,
-          categoryId: Number(categoryId),
-          imageUrl: imageUrls[0],
+          categoryId: +categoryId,
+          imageUrl: imageUrls[0] || null,
         });
 
-        const parsedSizes = sizes ? JSON.parse(sizes) : [];
-        if (Array.isArray(parsedSizes)) {
-          for (const sizeObj of parsedSizes) {
-            const { size, stock } = sizeObj;
-            if (size && stock != null) {
-              await tx
-                .insert(productSizes)
-                .values({ articleNumber, size, stock: Number(stock) });
-            }
+        for (const { size, stock } of sizesArr) {
+          if (size && stock != null) {
+            await tx.insert(productSizes).values({
+              articleNumber,
+              size,
+              stock: +stock,
+            });
           }
         }
       });
 
-      res.status(201).json(newProduct);
+      res.status(201).json({ message: "Продукт успішно додано" });
     } catch (error) {
-      if (req.files) await deleteFiles(req.files);
-      next(createError(500, "Не вдалося додати продукт"));
+      next(createError(500, error.message || "Не вдалося додати продукт"));
+    }
+  }
+);
+
+router.put(
+  "/product/:articleNumber",
+  authenticateAdmin,
+  uploadMultipleImagesMemory,
+  async (req, res, next) => {
+    try {
+      const { articleNumber } = req.params;
+      const {
+        brandId,
+        categoryId,
+        price,
+        discount,
+        name,
+        description,
+        sizes,
+        existingImageUrls,
+      } = req.body;
+      const imageFiles = req.files;
+
+      if (!brandId || !categoryId || !price || !name || !description) {
+        return next(createError(400, "Усі поля обов'язкові"));
+      }
+
+      const existingProduct = await db
+        .select()
+        .from(products)
+        .where(eq(products.articleNumber, articleNumber))
+        .limit(1);
+      if (!existingProduct.length) {
+        return next(createError(404, "Продукт не знайдено"));
+      }
+
+      const oldImageUrls = existingProduct[0].imageUrls || [];
+      const parsedExistingImageUrls = existingImageUrls
+        ? JSON.parse(existingImageUrls)
+        : [];
+
+      const imagesToDelete = oldImageUrls.filter(
+        (url) => !parsedExistingImageUrls.includes(url)
+      );
+
+      if (imagesToDelete.length > 0) {
+        const keysToDelete = imagesToDelete
+          .map((url) => url.split("/").pop())
+          .filter((key) => key);
+        if (keysToDelete.length > 0) {
+          const { error: deleteError } = await supabase.storage
+            .from("images")
+            .remove(keysToDelete);
+          if (deleteError) throw deleteError;
+        }
+      }
+
+      let newImageUrls = [];
+      if (imageFiles && imageFiles.length > 0) {
+        newImageUrls = await Promise.all(
+          imageFiles.map((file) =>
+            uploadToBucket(file.buffer, file.originalname)
+          )
+        );
+      }
+
+      const updatedImageUrls = [...parsedExistingImageUrls, ...newImageUrls];
+
+      let sizesArr = [];
+      if (sizes) {
+        try {
+          sizesArr = JSON.parse(sizes);
+        } catch (error) {
+          return next(createError(400, "Некоректний формат sizes"));
+        }
+      }
+
+      await db.transaction(async (tx) => {
+        await tx
+          .update(products)
+          .set({
+            brandId: +brandId,
+            price: +price,
+            discount: discount ? +discount : 0,
+            name,
+            description,
+            imageUrls: updatedImageUrls,
+            isActive: true,
+          })
+          .where(eq(products.articleNumber, articleNumber));
+
+        await tx
+          .update(productCategories)
+          .set({
+            categoryId: +categoryId,
+            imageUrl: updatedImageUrls[0] || null,
+          })
+          .where(eq(productCategories.articleNumber, articleNumber));
+
+        await tx
+          .delete(productSizes)
+          .where(eq(productSizes.articleNumber, articleNumber));
+        for (const { size, stock } of sizesArr) {
+          if (size && stock != null) {
+            await tx.insert(productSizes).values({
+              articleNumber,
+              size,
+              stock: +stock,
+            });
+          }
+        }
+      });
+
+      res.json({ message: "Продукт успішно оновлено" });
+    } catch (error) {
+      next(createError(500, error.message || "Не вдалося оновити продукт"));
+    }
+  }
+);
+
+router.delete(
+  "/product/:articleNumber",
+  authenticateAdmin,
+  async (req, res, next) => {
+    try {
+      const { articleNumber } = req.params;
+
+      const existingProduct = await db
+        .select()
+        .from(products)
+        .where(eq(products.articleNumber, articleNumber))
+        .limit(1);
+
+      if (!existingProduct.length) {
+        return next(createError(404, "Продукт не знайдено"));
+      }
+
+      const product = existingProduct[0];
+      const imageUrls = product.imageUrls || [];
+
+      if (imageUrls.length > 0) {
+        const keysToDelete = imageUrls
+          .map((url) => url.split("/").pop())
+          .filter((key) => key);
+        if (keysToDelete.length > 0) {
+          const { error: deleteError } = await supabase.storage
+            .from("images")
+            .remove(keysToDelete);
+          if (deleteError) {
+            throw new Error(
+              `Не вдалося видалити зображення: ${deleteError.message}`
+            );
+          }
+        }
+      }
+
+      await db.transaction(async (tx) => {
+        await tx
+          .delete(productSizes)
+          .where(eq(productSizes.articleNumber, articleNumber));
+        await tx
+          .delete(productCategories)
+          .where(eq(productCategories.articleNumber, articleNumber));
+        await tx
+          .delete(products)
+          .where(eq(products.articleNumber, articleNumber));
+      });
+
+      res.json({ message: "Продукт успішно видалено" });
+    } catch (error) {
+      console.error("Delete product error:", error);
+      next(createError(500, error.message || "Не вдалося видалити продукт"));
     }
   }
 );
 
 router.get("/products/active", async (req, res, next) => {
   try {
-    const activeProducts = await db
+    const active = await db
       .select({
         articleNumber: products.articleNumber,
         name: products.name,
@@ -185,36 +361,32 @@ router.get("/products/active", async (req, res, next) => {
         eq(productCategories.categoryId, categories.categoryId)
       );
 
-    const articleNumbers = activeProducts.map((p) => p.articleNumber);
-    const allSizes =
-      articleNumbers.length > 0
-        ? await db
-            .select({
-              articleNumber: productSizes.articleNumber,
-              size: productSizes.size,
-              stock: productSizes.stock,
-            })
-            .from(productSizes)
-            .where(inArray(productSizes.articleNumber, articleNumbers))
-        : [];
+    const ids = active.map((p) => p.articleNumber);
+    const sizes = ids.length
+      ? await db
+          .select({
+            articleNumber: productSizes.articleNumber,
+            size: productSizes.size,
+            stock: productSizes.stock,
+          })
+          .from(productSizes)
+          .where(inArray(productSizes.articleNumber, ids))
+      : [];
 
-    const productsWithSizes = activeProducts.map((prod) => {
-      const sizes = allSizes.filter(
-        (s) => s.articleNumber === prod.articleNumber
-      );
-      return { ...prod, sizes };
-    });
-
-    res.json(productsWithSizes);
-  } catch (error) {
-    console.error(error); // Додаткове логування помилки для налагодження
+    res.json(
+      active.map((p) => ({
+        ...p,
+        sizes: sizes.filter((s) => s.articleNumber === p.articleNumber),
+      }))
+    );
+  } catch {
     next(createError(500, "Не вдалося отримати активні продукти"));
   }
 });
 
 router.get("/products/inactive", async (req, res, next) => {
   try {
-    const inactiveProducts = await db
+    const inactive = await db
       .select({
         articleNumber: products.articleNumber,
         name: products.name,
@@ -240,32 +412,30 @@ router.get("/products/inactive", async (req, res, next) => {
         eq(productCategories.categoryId, categories.categoryId)
       );
 
-    const articleNumbers = inactiveProducts.map((p) => p.articleNumber);
-    const allSizes =
-      articleNumbers.length > 0
-        ? await db
-            .select({
-              articleNumber: productSizes.articleNumber,
-              size: productSizes.size,
-              stock: productSizes.stock,
-            })
-            .from(productSizes)
-            .where(inArray(productSizes.articleNumber, articleNumbers))
-        : [];
+    const ids = inactive.map((p) => p.articleNumber);
+    const sizes = ids.length
+      ? await db
+          .select({
+            articleNumber: productSizes.articleNumber,
+            size: productSizes.size,
+            stock: productSizes.stock,
+          })
+          .from(productSizes)
+          .where(inArray(productSizes.articleNumber, ids))
+      : [];
 
-    const productsWithSizes = inactiveProducts.map((prod) => {
-      const sizes = allSizes.filter(
-        (s) => s.articleNumber === prod.articleNumber
-      );
-      return { ...prod, sizes };
-    });
-
-    res.json(productsWithSizes);
-  } catch (error) {
+    res.json(
+      inactive.map((p) => ({
+        ...p,
+        sizes: sizes.filter((s) => s.articleNumber === p.articleNumber),
+      }))
+    );
+  } catch {
     next(createError(500, "Не вдалося отримати неактивні продукти"));
   }
 });
 
+// PATCH /product/:articleNumber/active
 router.patch(
   "/product/:articleNumber/active",
   authenticateAdmin,
@@ -274,16 +444,15 @@ router.patch(
       const { articleNumber } = req.params;
       const { isActive } = req.body;
       if (typeof isActive !== "boolean")
-        return next(createError(400, "isActive має бути булевим значенням"));
-
-      const [updatedProduct] = await db
+        return next(createError(400, "isActive має бути Boolean"));
+      const [u] = await db
         .update(products)
         .set({ isActive })
         .where(eq(products.articleNumber, articleNumber))
         .returning();
-      if (!updatedProduct) return next(createError(404, "Продукт не знайдено"));
-      res.json(updatedProduct);
-    } catch (error) {
+      if (!u) return next(createError(404, "Продукт не знайдено"));
+      res.json(u);
+    } catch {
       next(createError(500, "Не вдалося оновити статус продукту"));
     }
   }
@@ -292,163 +461,55 @@ router.patch(
 router.get("/product/:articleNumber", async (req, res, next) => {
   try {
     const { articleNumber } = req.params;
-    const product = await fetchOne(
-      db
-        .select({
-          articleNumber: products.articleNumber,
-          name: products.name,
-          price: products.price,
-          discount: products.discount,
-          description: products.description,
-          imageUrls: products.imageUrls,
-          brand: brands.name, // Отримуємо назву бренду
-          brandId: products.brandId,
-          category: categories.name, // Отримуємо назву категорії через JOIN
-          categoryId: categories.categoryId,
-          isActive: products.isActive,
-        })
-        .from(products)
-        .leftJoin(brands, eq(products.brandId, brands.brandId))
-        .leftJoin(
-          productCategories,
-          eq(products.articleNumber, productCategories.articleNumber)
-        )
-        .leftJoin(
-          categories,
-          eq(productCategories.categoryId, categories.categoryId)
-        )
-        .where(eq(products.articleNumber, articleNumber))
-        .limit(1)
-    );
-
-    if (!product || !product.isActive) {
-      return next(createError(404, "Продукт не знайдено"));
-    }
-
-    // Отримуємо розміри для цього товару
-    const sizes = await db
+    const prod = await db
       .select({
-        size: productSizes.size,
-        stock: productSizes.stock,
+        articleNumber: products.articleNumber,
+        name: products.name,
+        price: products.price,
+        discount: products.discount,
+        description: products.description,
+        imageUrls: products.imageUrls,
+        brand: brands.name,
+        brandId: products.brandId,
+        category: categories.name,
+        categoryId: categories.categoryId,
+        isActive: products.isActive,
       })
+      .from(products)
+      .leftJoin(brands, eq(products.brandId, brands.brandId))
+      .leftJoin(
+        productCategories,
+        eq(products.articleNumber, productCategories.articleNumber)
+      )
+      .leftJoin(
+        categories,
+        eq(productCategories.categoryId, categories.categoryId)
+      )
+      .where(eq(products.articleNumber, articleNumber))
+      .limit(1)
+      .then((r) => r[0]);
+
+    if (!prod || !prod.isActive)
+      return next(createError(404, "Продукт не знайдено або неактивний"));
+
+    const sizes = await db
+      .select({ size: productSizes.size, stock: productSizes.stock })
       .from(productSizes)
       .where(eq(productSizes.articleNumber, articleNumber));
 
-    res.json({ ...product, sizes });
-  } catch (error) {
-    console.error("Error in GET /product/:articleNumber:", error);
-    next(createError(500, "Не вдалося отримати дані продукту"));
+    res.json({ ...prod, sizes });
+  } catch {
+    next(createError(500, "Не вдалося отримати продукт"));
   }
 });
 
-router.put(
-  "/product/:articleNumber",
-  authenticateAdmin,
-  uploadMultipleImages,
-  async (req, res, next) => {
-    try {
-      const { articleNumber } = req.params;
-      const oldProduct = await db
-        .select({ imageUrls: products.imageUrls })
-        .from(products)
-        .where(eq(products.articleNumber, articleNumber))
-        .then((results) => results[0]);
-      if (!oldProduct) return next(createError(404, "Продукт не знайдено"));
-
-      const newImageUrls = req.body.imageUrls
-        ? JSON.parse(req.body.imageUrls)
-        : [];
-      let uploadedImageUrls = [];
-      if (req.files && req.files.length > 0) {
-        uploadedImageUrls = req.files.map(
-          (file) =>
-            `${req.protocol}://${req.get("host")}/images/${file.filename}`
-        );
-      }
-      const finalImageUrls = [...newImageUrls, ...uploadedImageUrls];
-
-      const imagesToDelete = oldProduct.imageUrls.filter(
-        (url) => !finalImageUrls.includes(url)
-      );
-      if (imagesToDelete.length > 0) await deleteFiles(imagesToDelete);
-
-      const updatedFields = {
-        brandId: Number(req.body.brandId),
-        price: Number(req.body.price),
-        discount: Number(req.body.discount),
-        name: req.body.name,
-        description: req.body.description,
-        imageUrls: finalImageUrls,
-      };
-
-      let updatedProduct;
-      await db.transaction(async (tx) => {
-        const [updated] = await tx
-          .update(products)
-          .set(updatedFields)
-          .where(eq(products.articleNumber, articleNumber))
-          .returning();
-        updatedProduct = updated;
-
-        const sizes = req.body.sizes ? JSON.parse(req.body.sizes) : [];
-        if (Array.isArray(sizes)) {
-          await tx
-            .delete(productSizes)
-            .where(eq(productSizes.articleNumber, articleNumber));
-          for (const sizeObj of sizes) {
-            const { size, stock } = sizeObj;
-            if (size && stock != null) {
-              await tx
-                .insert(productSizes)
-                .values({ articleNumber, size, stock: Number(stock) });
-            }
-          }
-        }
-      });
-
-      res.json(updatedProduct);
-    } catch (error) {
-      next(createError(500, "Не вдалося оновити продукт"));
-    }
-  }
-);
-
-router.delete(
-  "/product/:articleNumber",
-  authenticateAdmin,
-  async (req, res, next) => {
-    try {
-      const { articleNumber } = req.params;
-      const product = await fetchOne(
-        db
-          .select({ imageUrls: products.imageUrls })
-          .from(products)
-          .where(eq(products.articleNumber, articleNumber))
-      );
-      if (!product) return next(createError(404, "Продукт не знайдено"));
-
-      if (product.imageUrls?.length) await deleteFiles(product.imageUrls);
-
-      const deleted = await db
-        .delete(products)
-        .where(eq(products.articleNumber, articleNumber))
-        .returning();
-      if (!deleted.length) return next(createError(404, "Продукт не знайдено"));
-
-      res.json({ message: "Продукт успішно видалено" });
-    } catch (error) {
-      next(createError(500, "Не вдалося видалити продукт"));
-    }
-  }
-);
-
+// GET /search?q=...
 router.get("/search", async (req, res, next) => {
   try {
     const { q } = req.query;
     if (!q || typeof q !== "string")
-      return next(createError(400, "Вкажіть параметр пошуку (q)"));
-
-    const productsList = await db
+      return next(createError(400, "Вкажіть параметр q"));
+    const found = await db
       .select({
         articleNumber: products.articleNumber,
         name: products.name,
@@ -468,28 +529,25 @@ router.get("/search", async (req, res, next) => {
         )
       );
 
-    const articleNumbers = productsList.map((p) => p.articleNumber);
-    const allSizes =
-      articleNumbers.length > 0
-        ? await db
-            .select({
-              articleNumber: productSizes.articleNumber,
-              size: productSizes.size,
-              stock: productSizes.stock,
-            })
-            .from(productSizes)
-            .where(inArray(productSizes.articleNumber, articleNumbers))
-        : [];
+    const ids = found.map((p) => p.articleNumber);
+    const sizes = ids.length
+      ? await db
+          .select({
+            articleNumber: productSizes.articleNumber,
+            size: productSizes.size,
+            stock: productSizes.stock,
+          })
+          .from(productSizes)
+          .where(inArray(productSizes.articleNumber, ids))
+      : [];
 
-    const productsWithSizes = productsList.map((prod) => {
-      const sizes = allSizes.filter(
-        (s) => s.articleNumber === prod.articleNumber
-      );
-      return { ...prod, sizes };
-    });
-
-    res.json(productsWithSizes);
-  } catch (error) {
+    res.json(
+      found.map((p) => ({
+        ...p,
+        sizes: sizes.filter((s) => s.articleNumber === p.articleNumber),
+      }))
+    );
+  } catch {
     next(createError(500, "Помилка пошуку товарів"));
   }
 });
