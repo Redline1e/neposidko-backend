@@ -31,6 +31,7 @@ app.use(
     origin: process.env.FRONT_END_URL,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true, 
   })
 );
 
@@ -40,7 +41,6 @@ app.use(
     secret: process.env.SESSION_SECRET || "your-secret-key",
     resave: false,
     saveUninitialized: true,
-    cookie: { secure: false }, // У продакшені встановіть secure: true з HTTPS
   })
 );
 
