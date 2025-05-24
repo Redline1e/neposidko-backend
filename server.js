@@ -28,18 +28,10 @@ const app = express();
 // Налаштування CORS
 app.use(
   cors({
-    origin: (origin, callback) => {
-      console.log("Request Origin:", origin);
-      console.log("Allowed Origin:", process.env.FRONT_END_URL);
-      if (origin === process.env.FRONT_END_URL) {
-        callback(null, true);
-      } else {
-        callback(new Error("Not allowed by CORS"));
-      }
-    },
+    origin: process.env.FRONT_END_URL,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
+    credentials: true, 
   })
 );
 

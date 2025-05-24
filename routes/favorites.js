@@ -1,9 +1,8 @@
-// routes/favorites.js
 import express from "express";
 import createError from "http-errors";
 import { db } from "../db/index.js";
-import { favorites } from "../db/schema.js";
-import { eq, and, sql } from "drizzle-orm";
+import { favorites, products, productSizes } from "../db/schema.js";
+import { eq, and, sql, inArray } from "drizzle-orm";
 import { authenticate } from "../middleware/auth.js";
 
 const router = express.Router();
@@ -48,6 +47,7 @@ router.post("/favorites", authenticate, async (req, res, next) => {
       count: Number(countResult[0].count),
     });
   } catch (error) {
+    console.error("Помилка при додаванні до улюблених:", error);
     next(createError(500, "Не вдалося додати до улюблених"));
   }
 });
@@ -85,6 +85,7 @@ router.delete(
         count: Number(countResult[0].count),
       });
     } catch (error) {
+      console.error("Помилка при видаленні з улюблених:", error);
       next(createError(500, "Не вдалося видалити товар з улюблених"));
     }
   }
@@ -100,23 +101,85 @@ router.get("/favorites/count", authenticate, async (req, res, next) => {
       .where(eq(favorites.userId, userId));
     res.json({ count: Number(countResult[0].count) });
   } catch (error) {
+    console.error("Помилка при отриманні кількості улюблених:", error);
     next(createError(500, "Не вдалося отримати кількість улюблених товарів"));
   }
 });
 
-// Отримання списку улюблених товарів (опціонально, якщо потрібно)
+// Отримання списку улюблених товарів з повною інформацією
 router.get("/favorites", authenticate, async (req, res, next) => {
   try {
     const { userId } = req.user;
     const userFavorites = await db
       .select({
-        articleNumber: favorites.articleNumber,
+        articleNumber: products.articleNumber,
+        brandId: products.brandId,
+        price: products.price,
+        discount: products.discount,
+        name: products.name,
+        description: products.description, 
+        imageUrls: products.imageUrls,
+        isActive: products.isActive,
+        sizes: sql`array_agg(json_build_object('size', ${productSizes.size}, 'stock', ${productSizes.stock}))`,
       })
       .from(favorites)
-      .where(eq(favorites.userId, userId));
+      .innerJoin(products, eq(favorites.articleNumber, products.articleNumber))
+      .leftJoin(
+        productSizes,
+        eq(products.articleNumber, productSizes.articleNumber)
+      )
+      .where(eq(favorites.userId, userId))
+      .groupBy(products.articleNumber);
+
+    console.log(`Знайдено ${userFavorites.length} улюблених товарів`);
+
     res.json(userFavorites);
   } catch (error) {
+    console.error("Помилка при отриманні улюблених товарів:", error);
     next(createError(500, "Не вдалося отримати улюблені товари"));
+  }
+});
+
+router.post("/products/by-articles", async (req, res, next) => {
+  try {
+    const { articleNumbers } = req.body;
+
+    if (
+      !articleNumbers ||
+      !Array.isArray(articleNumbers) ||
+      articleNumbers.length === 0
+    ) {
+      return next(
+        createError(
+          400,
+          "articleNumbers обов'язковий і має бути непорожнім масивом"
+        )
+      );
+    }
+
+    const productsData = await db
+      .select({
+        articleNumber: products.articleNumber,
+        brandId: products.brandId,
+        price: products.price,
+        discount: products.discount,
+        name: products.name,
+        description: products.description,
+        imageUrls: products.imageUrls,
+        isActive: products.isActive,
+        sizes: sql`array_agg(json_build_object('size', ${productSizes.size}, 'stock', ${productSizes.stock}))`,
+      })
+      .from(products)
+      .leftJoin(
+        productSizes,
+        eq(products.articleNumber, productSizes.articleNumber)
+      )
+      .where(inArray(products.articleNumber, articleNumbers))
+      .groupBy(products.articleNumber);
+
+    res.json(productsData);
+  } catch (error) {
+    next(createError(500, "Не вдалося отримати товари"));
   }
 });
 
