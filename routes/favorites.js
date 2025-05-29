@@ -131,7 +131,6 @@ router.get("/favorites", authenticate, async (req, res, next) => {
       .where(eq(favorites.userId, userId))
       .groupBy(products.articleNumber);
 
-    console.log(`Знайдено ${userFavorites.length} улюблених товарів`);
 
     res.json(userFavorites);
   } catch (error) {

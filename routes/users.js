@@ -7,22 +7,50 @@ import { users, orders, orderItems, favorites } from "../db/schema.js";
 import { eq, and } from "drizzle-orm";
 import { fetchOne } from "../utils.js";
 import { authenticate } from "../middleware/auth.js";
-import { v4 as uuidv4 } from "uuid"; // Import the uuid function
+import { v4 as uuidv4 } from "uuid";
+import axios from "axios";
 
 const router = express.Router();
 
 router.post("/register", async (req, res, next) => {
-  console.log("=== Початок маршруту /register ===");
   try {
-    const {
-      email,
-      password,
-      cart: clientCart,
-      favorites: clientFavorites,
-    } = req.body;
-    if (!email || !password)
-      return next(createError(400, "Усі поля обов'язкові!"));
+    const { email, password, recaptchaToken } = req.body;
+    if (!email || !password || !recaptchaToken)
+      return next(
+        createError(400, "Усі поля, включно з reCAPTCHA, обов'язкові!")
+      );
 
+    if (typeof recaptchaToken !== "string" || recaptchaToken.trim() === "") {
+      return next(createError(400, "Некоректний reCAPTCHA токен"));
+    }
+
+    console.log("reCAPTCHA Secret Key:", process.env.RECAPTCHA_SECRET_KEY);
+    console.log("Received reCAPTCHA Token:", recaptchaToken);
+    const response = await axios.post(
+      `https://www.google.com/recaptcha/api/siteverify`,
+      null,
+      {
+        params: {
+          secret: process.env.RECAPTCHA_SECRET_KEY,
+          response: recaptchaToken,
+        },
+      }
+    );
+
+    console.log("reCAPTCHA API Response:", response.data);
+    if (!response.data.success) {
+      console.log("reCAPTCHA Error Codes:", response.data["error-codes"]);
+      return next(
+        createError(
+          400,
+          `Невдала перевірка reCAPTCHA: ${
+            response.data["error-codes"]?.join(", ") || "невідома помилка"
+          }`
+        )
+      );
+    }
+
+    // Continue with registration logic
     const sanitizedEmail = email.trim().toLowerCase();
     const name = sanitizedEmail.split("@")[0];
     const existingUser = await fetchOne(
@@ -35,14 +63,14 @@ router.post("/register", async (req, res, next) => {
     if (existingUser) return next(createError(409, "Користувач уже існує!"));
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    const userId = uuidv4(); // Generate a new UUID for the user
+    const userId = uuidv4();
     let newUser;
 
     await db.transaction(async (tx) => {
       const insertedUsers = await tx
         .insert(users)
         .values({
-          userId, // Include the generated userId
+          userId,
           name,
           email: sanitizedEmail,
           password: hashedPassword,
@@ -55,104 +83,6 @@ router.post("/register", async (req, res, next) => {
           roleId: users.roleId,
         });
       newUser = insertedUsers[0];
-
-      // Process favorites from client or session
-      if (clientFavorites && Array.isArray(clientFavorites)) {
-        for (const articleNumber of clientFavorites) {
-          const exists = await tx
-            .select()
-            .from(favorites)
-            .where(
-              and(
-                eq(favorites.userId, newUser.userId),
-                eq(favorites.articleNumber, articleNumber)
-              )
-            )
-            .limit(1);
-          if (!exists.length) {
-            await tx
-              .insert(favorites)
-              .values({ userId: newUser.userId, articleNumber });
-          }
-        }
-      } else if (req.session.favorites?.length > 0) {
-        for (const articleNumber of req.session.favorites) {
-          const exists = await tx
-            .select()
-            .from(favorites)
-            .where(
-              and(
-                eq(favorites.userId, newUser.userId),
-                eq(favorites.articleNumber, articleNumber)
-              )
-            )
-            .limit(1);
-          if (!exists.length) {
-            await tx
-              .insert(favorites)
-              .values({ userId: newUser.userId, articleNumber });
-          }
-        }
-        req.session.favorites = [];
-      }
-
-      // Process cart from client or session
-      if (clientCart && Array.isArray(clientCart)) {
-        let currentOrder = await tx
-          .select({ orderId: orders.orderId })
-          .from(orders)
-          .where(
-            and(eq(orders.userId, newUser.userId), eq(orders.orderStatusId, 1))
-          )
-          .limit(1);
-        if (!currentOrder.length) {
-          const newOrder = await tx
-            .insert(orders)
-            .values({
-              userId: newUser.userId,
-              orderStatusId: 1,
-              lastUpdated: new Date(),
-            })
-            .returning({ orderId: orders.orderId });
-          currentOrder = newOrder;
-        }
-        for (const item of clientCart) {
-          await tx.insert(orderItems).values({
-            orderId: currentOrder[0].orderId,
-            articleNumber: item.articleNumber,
-            size: item.size,
-            quantity: item.quantity,
-          });
-        }
-      } else if (req.session.cart?.length > 0) {
-        let currentOrder = await tx
-          .select({ orderId: orders.orderId })
-          .from(orders)
-          .where(
-            and(eq(orders.userId, newUser.userId), eq(orders.orderStatusId, 1))
-          )
-          .limit(1);
-        if (!currentOrder.length) {
-          const newOrder = await tx
-            .insert(orders)
-            .values({
-              userId: newUser.userId,
-              orderStatusId: 1,
-              lastUpdated: new Date(),
-            })
-            .returning({ orderId: orders.orderId });
-          currentOrder = newOrder;
-        }
-        for (const item of req.session.cart) {
-          await tx.insert(orderItems).values({
-            orderId: currentOrder[0].orderId,
-            articleNumber: item.articleNumber,
-            size: item.size,
-            quantity: item.quantity,
-          });
-        }
-        req.session.cart = [];
-      }
     });
 
     const token = jwt.sign({ userId: newUser.userId }, process.env.JWT_SECRET, {
@@ -160,7 +90,7 @@ router.post("/register", async (req, res, next) => {
     });
     res.status(201).json({ ...newUser, token });
   } catch (error) {
-    console.error("Помилка реєстрації:", error);
+    console.error("Registration Error:", error);
     next(error);
   }
 });

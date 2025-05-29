@@ -5,6 +5,7 @@ import { orders, orderItems, productSizes } from "../db/schema.js";
 import { eq, or, and } from "drizzle-orm";
 import { authenticate, optionalAuth } from "../middleware/auth.js";
 import { fetchOne } from "../utils.js";
+import axios from "axios";
 
 const router = express.Router();
 
@@ -143,19 +144,46 @@ router.post("/orders/checkout", optionalAuth, async (req, res, next) => {
 
 router.post("/orders/guest-checkout", async (req, res) => {
   try {
-    const { deliveryAddress, telephone, paymentMethod, cartItems } = req.body;
+    const {
+      deliveryAddress,
+      telephone,
+      paymentMethod,
+      cartItems,
+      recaptchaToken,
+    } = req.body;
 
-    // Перевірка обов'язкових полів
-    if (!deliveryAddress || !telephone || !paymentMethod || !cartItems) {
-      return res.status(400).json({ message: "Усі поля обов'язкові" });
+    if (
+      !deliveryAddress ||
+      !telephone ||
+      !paymentMethod ||
+      !cartItems ||
+      !recaptchaToken
+    ) {
+      return res
+        .status(400)
+        .json({ message: "Усі поля, включно з reCAPTCHA, обов'язкові" });
     }
 
-    // Створення нового замовлення для гостя
+    const response = await axios.post(
+      `https://www.google.com/recaptcha/api/siteverify`,
+      null,
+      {
+        params: {
+          secret: process.env.RECAPTCHA_SECRET_KEY,
+          response: recaptchaToken,
+        },
+      }
+    );
+    if (!response.data.success) {
+      return res.status(400).json({ message: "Невдала перевірка reCAPTCHA" });
+    }
+
+    // Решта коду без змін
     const [newOrder] = await db
       .insert(orders)
       .values({
-        userId: null, // Для гостей userId буде null
-        orderStatusId: 2, // Припускаємо, що 2 — це статус "Нове замовлення"
+        userId: null,
+        orderStatusId: 2,
         deliveryAddress,
         telephone,
         paymentMethod,
@@ -166,7 +194,6 @@ router.post("/orders/guest-checkout", async (req, res) => {
 
     const orderId = newOrder.orderId;
 
-    // Додавання товарів до замовлення
     for (const item of cartItems) {
       const { articleNumber, size, quantity } = item;
       await db.insert(orderItems).values({

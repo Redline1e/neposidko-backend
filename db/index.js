@@ -18,7 +18,6 @@ try {
   });
 
   db = drizzle(client, { schema });
-  console.log("Підключення до бази даних успішне");
 } catch (error) {
   console.error("Помилка підключення до бази даних:", error);
   throw error;
