@@ -57,88 +57,134 @@ router.get("/orders/all", authenticate, async (req, res, next) => {
   }
 });
 
-router.post("/orders/checkout", optionalAuth, async (req, res, next) => {
+// Оформлення замовлення
+router.post("/orders/checkout", authenticate, async (req, res, next) => {
+  const { orderId, deliveryAddress, telephone, paymentMethod } = req.body;
+
+  if (!orderId || !deliveryAddress || !telephone || !paymentMethod) {
+    return next(createError(400, "Усі поля обов'язкові"));
+  }
+
   try {
-    const { deliveryAddress, telephone, paymentMethod, email, name } = req.body;
-    if (!deliveryAddress || !telephone || (!req.user && (!email || !name))) {
-      return next(createError(400, "Усі поля обов'язкові"));
-    }
-
-    let orderId;
     await db.transaction(async (tx) => {
-      if (req.user) {
-        const { userId } = req.user;
-        const currentOrder = await fetchOne(
-          tx
-            .select({ orderId: orders.orderId })
-            .from(orders)
-            .where(and(eq(orders.userId, userId), eq(orders.orderStatusId, 1)))
-            .limit(1)
-        );
-        if (!currentOrder) throw createError(404, "Активний кошик не знайдено");
-        orderId = currentOrder.orderId;
+      // Отримуємо товари в замовленні
+      const items = await tx
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.orderId, orderId));
 
-        await tx
-          .update(orders)
-          .set({ orderStatusId: 2, deliveryAddress, telephone, paymentMethod })
-          .where(eq(orders.orderId, orderId));
-      } else {
-        if (!req.session.cart || req.session.cart.length === 0)
-          throw createError(400, "Кошик порожній");
-
-        const [newOrder] = await tx
-          .insert(orders)
-          .values({
-            userId: null,
-            orderStatusId: 2,
-            deliveryAddress,
-            telephone,
-            paymentMethod,
-            email,
-            name,
-            lastUpdated: new Date(),
-          })
-          .returning({ orderId: orders.orderId });
-        orderId = newOrder.orderId;
-
-        for (const item of req.session.cart) {
-          const { articleNumber, size, quantity } = item;
-          const productSize = await tx
-            .select()
-            .from(productSizes)
-            .where(
-              and(
-                eq(productSizes.articleNumber, articleNumber),
-                eq(productSizes.size, size)
-              )
+      for (const item of items) {
+        const [size] = await tx
+          .select()
+          .from(productSizes)
+          .where(
+            and(
+              eq(productSizes.articleNumber, item.articleNumber),
+              eq(productSizes.size, item.size)
             )
-            .limit(1);
-          if (productSize[0].stock < quantity) {
-            throw createError(
-              400,
-              `Недостатньо товару ${articleNumber} розміру ${size}`
-            );
-          }
-          await tx
-            .insert(orderItems)
-            .values({ orderId, articleNumber, size, quantity });
+          )
+          .limit(1);
+
+        if (!size || size.stock < item.quantity) {
+          throw new Error(`Недостатньо запасів для розміру ${item.size}`);
+        }
+
+        const newStock = size.stock - item.quantity;
+        if (newStock > 0) {
           await tx
             .update(productSizes)
-            .set({ stock: productSize[0].stock - quantity })
+            .set({ stock: newStock })
             .where(
               and(
-                eq(productSizes.articleNumber, articleNumber),
-                eq(productSizes.size, size)
+                eq(productSizes.articleNumber, item.articleNumber),
+                eq(productSizes.size, item.size)
+              )
+            );
+        } else {
+          await tx
+            .delete(productSizes)
+            .where(
+              and(
+                eq(productSizes.articleNumber, item.articleNumber),
+                eq(productSizes.size, item.size)
               )
             );
         }
-        req.session.cart = [];
       }
+
+      // Оновлюємо статус замовлення
+      await tx
+        .update(orders)
+        .set({
+          orderStatusId: 2, // "В обробці"
+          deliveryAddress,
+          telephone,
+          paymentMethod,
+        })
+        .where(eq(orders.orderId, orderId));
     });
 
-    res.json({ message: "Замовлення оформлено успішно", orderId });
+    res.json({ message: "Замовлення оформлено успішно" });
   } catch (error) {
-    next(error);
+    next(createError(500, error.message || "Не вдалося оформити замовлення"));
+  }
+});
+
+// Скасування замовлення
+router.post("/orders/cancel", authenticate, async (req, res, next) => {
+  const { orderId } = req.body;
+
+  if (!orderId) {
+    return next(createError(400, "orderId є обов'язковим"));
+  }
+
+  try {
+    await db.transaction(async (tx) => {
+      const items = await tx
+        .select()
+        .from(orderItems)
+        .where(eq(orderItems.orderId, orderId));
+
+      for (const item of items) {
+        const [size] = await tx
+          .select()
+          .from(productSizes)
+          .where(
+            and(
+              eq(productSizes.articleNumber, item.articleNumber),
+              eq(productSizes.size, item.size)
+            )
+          )
+          .limit(1);
+
+        if (size) {
+          await tx
+            .update(productSizes)
+            .set({ stock: size.stock + item.quantity })
+            .where(
+              and(
+                eq(productSizes.articleNumber, item.articleNumber),
+                eq(productSizes.size, item.size)
+              )
+            );
+        } else {
+          await tx.insert(productSizes).values({
+            articleNumber: item.articleNumber,
+            size: item.size,
+            stock: item.quantity,
+          });
+        }
+      }
+
+      await tx
+        .update(orders)
+        .set({ orderStatusId: 5 }) // "Скасовано"
+        .where(eq(orders.orderId, orderId));
+    });
+
+    res.json({ message: "Замовлення скасовано успішно" });
+  } catch (error) {
+    next(createError(500, error.message || "Не вдалося скасувати замовлення"));
   }
 });
 
@@ -239,6 +285,125 @@ router.get("/orders/history", authenticate, async (req, res, next) => {
     res.json(userOrders);
   } catch (error) {
     next(createError(500, "Не вдалося отримати історію замовлень"));
+  }
+});
+
+router.post("/orders/update-status", authenticate, async (req, res, next) => {
+  const { orderId, newStatus } = req.body;
+
+  if (!orderId || !newStatus) {
+    return next(createError(400, "orderId та newStatus обов'язкові"));
+  }
+
+  try {
+    await db.transaction(async (tx) => {
+      // Отримуємо поточний статус замовлення
+      const order = await tx
+        .select()
+        .from(orders)
+        .where(eq(orders.orderId, orderId))
+        .limit(1);
+
+      if (!order.length) {
+        throw new Error("Замовлення не знайдено");
+      }
+
+      const currentStatus = order[0].orderStatusId;
+
+      // Обробка зміни запасів при статусі "3 - Прийнято"
+      if (newStatus === 3 && currentStatus !== 3) {
+        const items = await tx
+          .select()
+          .from(orderItems)
+          .where(eq(orderItems.orderId, orderId));
+
+        for (const item of items) {
+          const [sizeData] = await tx
+            .select()
+            .from(productSizes)
+            .where(
+              and(
+                eq(productSizes.articleNumber, item.articleNumber),
+                eq(productSizes.size, item.size)
+              )
+            )
+            .limit(1);
+
+          if (!sizeData) {
+            throw new Error(
+              `Розмір ${item.size} для товару ${item.articleNumber} не знайдено`
+            );
+          }
+
+          const newStock = sizeData.stock - item.quantity;
+          if (newStock < 0) {
+            throw new Error(
+              `Недостатньо запасів для товару ${item.articleNumber}, розмір ${item.size}`
+            );
+          }
+
+          await tx
+            .update(productSizes)
+            .set({ stock: newStock })
+            .where(
+              and(
+                eq(productSizes.articleNumber, item.articleNumber),
+                eq(productSizes.size, item.size)
+              )
+            );
+        }
+      }
+      // Обробка зміни запасів при статусі "6 - Скасовано"
+      else if (newStatus === 6 && currentStatus !== 6) {
+        const items = await tx
+          .select()
+          .from(orderItems)
+          .where(eq(orderItems.orderId, orderId));
+
+        for (const item of items) {
+          const [sizeData] = await tx
+            .select()
+            .from(productSizes)
+            .where(
+              and(
+                eq(productSizes.articleNumber, item.articleNumber),
+                eq(productSizes.size, item.size)
+              )
+            )
+            .limit(1);
+
+          if (!sizeData) {
+            await tx.insert(productSizes).values({
+              articleNumber: item.articleNumber,
+              size: item.size,
+              stock: item.quantity,
+            });
+          } else {
+            await tx
+              .update(productSizes)
+              .set({ stock: sizeData.stock + item.quantity })
+              .where(
+                and(
+                  eq(productSizes.articleNumber, item.articleNumber),
+                  eq(productSizes.size, item.size)
+                )
+              );
+          }
+        }
+      }
+
+      // Оновлюємо статус замовлення
+      await tx
+        .update(orders)
+        .set({ orderStatusId: newStatus })
+        .where(eq(orders.orderId, orderId));
+    });
+
+    res.json({ message: "Статус замовлення оновлено успішно" });
+  } catch (error) {
+    next(
+      createError(500, error.message || "Не вдалося оновити статус замовлення")
+    );
   }
 });
 

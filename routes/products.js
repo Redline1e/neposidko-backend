@@ -120,6 +120,11 @@ router.post(
       if (sizes) {
         try {
           sizesArr = JSON.parse(sizes);
+          for (const { size, stock } of sizesArr) {
+            if (!size || stock == null || stock < 0) {
+              return next(createError(400, "Некоректні дані розмірів"));
+            }
+          }
         } catch (error) {
           return next(createError(400, "Некоректний формат sizes"));
         }
@@ -229,6 +234,11 @@ router.put(
       if (sizes) {
         try {
           sizesArr = JSON.parse(sizes);
+          for (const { size, stock } of sizesArr) {
+            if (!size || stock == null || stock < 0) {
+              return next(createError(400, "Некоректні дані розмірів"));
+            }
+          }
         } catch (error) {
           return next(createError(400, "Некоректний формат sizes"));
         }
@@ -332,7 +342,6 @@ router.delete(
     }
   }
 );
-
 router.get("/products/active", async (req, res, next) => {
   try {
     const active = await db
