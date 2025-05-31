@@ -8,6 +8,9 @@ import {
   reviews,
   users,
   orderStatus,
+  brands,
+  categories,
+  productCategories,
 } from "../db/schema.js";
 import { eq } from "drizzle-orm";
 import { authenticateAdmin } from "../middleware/auth.js";
@@ -232,6 +235,7 @@ router.delete("/users/:userId", authenticateAdmin, async (req, res, next) => {
 
 router.get("/generate-report", authenticateAdmin, async (req, res, next) => {
   try {
+    // 1) Вибираємо дані з БД
     const allOrders = await db
       .select({
         orderId: orders.orderId,
@@ -252,6 +256,7 @@ router.get("/generate-report", authenticateAdmin, async (req, res, next) => {
         eq(orders.orderStatusId, orderStatus.orderStatusId)
       );
 
+    // 2) Формуємо масив об’єктів для sheet_to_json
     const worksheetData = allOrders.map((order) => ({
       "ID замовлення": order.orderId,
       "Ім'я користувача": order.userName || "Не вказано",
@@ -263,18 +268,29 @@ router.get("/generate-report", authenticateAdmin, async (req, res, next) => {
       "Метод оплати": order.paymentMethod || "Не вказано",
     }));
 
+    // 3) Створюємо workbook та worksheet
     const workbook = xlsx.utils.book_new();
     const worksheet = xlsx.utils.json_to_sheet(worksheetData);
     xlsx.utils.book_append_sheet(workbook, worksheet, "Замовлення");
 
-    const filePath = path.join(__dirname, "report.xlsx");
-    xlsx.writeFile(workbook, filePath);
-
-    res.download(filePath, "orders_report.xlsx", async (err) => {
-      if (err) next(err);
-      await fs.unlink(filePath);
+    // 4) Генеруємо Buffer (тип Excel) у пам’яті
+    const excelBuffer = xlsx.write(workbook, {
+      bookType: "xlsx",
+      type: "buffer",
     });
+
+    // 5) Встановлюємо заголовки для скачування та відправляємо
+    res.setHeader(
+      "Content-Disposition",
+      'attachment; filename="orders_report.xlsx"'
+    );
+    res.setHeader(
+      "Content-Type",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    return res.send(excelBuffer);
   } catch (error) {
+    console.error("Помилка формування звіту:", error);
     next(createError(500, "Помилка формування звіту"));
   }
 });
@@ -286,9 +302,16 @@ router.post(
   async (req, res, next) => {
     try {
       const file = req.file;
-      if (!file) return next(createError(400, "Файл не завантажено"));
+      if (!file) {
+        return next(createError(400, "Файл не завантажено"));
+      }
 
-      const workbook = xlsx.readFile(file.path, { cellDates: true });
+      // Тепер файл у пам’яті: buffer, а не на диску
+      // Використовуємо xlsx.read з буфером
+      const workbook = xlsx.read(file.buffer, {
+        type: "buffer",
+        cellDates: true,
+      });
       const brandsSheet = workbook.Sheets["Brands"];
       const categoriesSheet = workbook.Sheets["Categories"];
       const productsSheet = workbook.Sheets["Products"];
@@ -301,12 +324,15 @@ router.post(
         );
       }
 
+      // Конвертуємо аркуші в JSON
       const brandsData = xlsx.utils.sheet_to_json(brandsSheet);
       const categoriesData = xlsx.utils.sheet_to_json(categoriesSheet);
       const productsData = xlsx.utils.sheet_to_json(productsSheet);
 
       const log = { added: 0, updated: 0, skipped: 0, errors: [] };
+
       await db.transaction(async (tx) => {
+        // ========== Імпорт брендів ==========
         for (const brand of brandsData) {
           if (!brand.name || typeof brand.name !== "string") {
             log.errors.push("Пропущено бренд: name обов'язковий");
@@ -317,6 +343,7 @@ router.post(
             .from(brands)
             .where(eq(brands.name, brand.name))
             .limit(1);
+
           if (existingBrand.length) {
             log.skipped++;
           } else {
@@ -325,6 +352,7 @@ router.post(
           }
         }
 
+        // ========== Імпорт категорій ==========
         for (const category of categoriesData) {
           if (!category.name || typeof category.name !== "string") {
             log.errors.push("Пропущено категорію: name обов'язковий");
@@ -335,6 +363,7 @@ router.post(
             .from(categories)
             .where(eq(categories.name, category.name))
             .limit(1);
+
           if (existingCategory.length) {
             if (
               category.imageUrl &&
@@ -359,6 +388,7 @@ router.post(
           }
         }
 
+        // ========== Імпорт продуктів ==========
         for (const product of productsData) {
           if (
             !product.articleNumber ||
@@ -381,35 +411,40 @@ router.post(
             continue;
           }
 
-          const brand = await tx
+          // Знайдемо бренд
+          const brandRec = await tx
             .select()
             .from(brands)
             .where(eq(brands.name, product.brand))
             .limit(1);
-          if (!brand.length) {
+          if (!brandRec.length) {
             log.errors.push(
               `Пропущено продукт ${product.articleNumber}: бренд "${product.brand}" не знайдено`
             );
             continue;
           }
 
-          const category = await tx
+          // Знайдемо категорію
+          const categoryRec = await tx
             .select()
             .from(categories)
             .where(eq(categories.name, product.category))
             .limit(1);
-          if (!category.length) {
+          if (!categoryRec.length) {
             log.errors.push(
               `Пропущено продукт ${product.articleNumber}: категорія "${product.category}" не знайдена`
             );
             continue;
           }
 
+          // Перевіримо, чи вже існує цей продукт
           const existingProduct = await tx
             .select()
             .from(products)
             .where(eq(products.articleNumber, product.articleNumber))
             .limit(1);
+
+          // Розбиваємо imageUrls на масив, якщо воно є
           const imageUrls = product.imageUrls
             ? String(product.imageUrls)
                 .split(",")
@@ -417,6 +452,7 @@ router.post(
             : [];
 
           if (existingProduct.length) {
+            // Оновлюємо продукт, якщо зміни відрізняються
             const existingImages = existingProduct[0].imageUrls || [];
             const isDuplicate =
               existingProduct[0].name === product.name &&
@@ -426,69 +462,70 @@ router.post(
 
             if (isDuplicate) {
               log.skipped++;
-              continue;
-            }
+            } else {
+              await tx
+                .update(products)
+                .set({
+                  brandId: brandRec[0].brandId,
+                  price: product.price,
+                  discount: product.discount
+                    ? Number(product.discount)
+                    : existingProduct[0].discount,
+                  name: product.name,
+                  description:
+                    product.description || existingProduct[0].description,
+                  imageUrls:
+                    imageUrls.length > 0
+                      ? imageUrls
+                      : existingProduct[0].imageUrls,
+                  isActive: true,
+                })
+                .where(eq(products.articleNumber, product.articleNumber));
 
-            await tx
-              .update(products)
-              .set({
-                brandId: brand[0].brandId,
-                price: product.price,
-                discount: product.discount
-                  ? Number(product.discount)
-                  : existingProduct[0].discount,
-                name: product.name,
-                description:
-                  product.description || existingProduct[0].description,
-                imageUrls:
-                  imageUrls.length > 0
-                    ? imageUrls
-                    : existingProduct[0].imageUrls,
-                isActive: true,
-              })
-              .where(eq(products.articleNumber, product.articleNumber));
+              await tx
+                .update(productCategories)
+                .set({
+                  categoryId: categoryRec[0].categoryId,
+                  imageUrl: imageUrls[0] || null,
+                })
+                .where(
+                  eq(productCategories.articleNumber, product.articleNumber)
+                );
 
-            await tx
-              .update(productCategories)
-              .set({
-                categoryId: category[0].categoryId,
-                imageUrl: imageUrls[0] || null,
-              })
-              .where(
-                eq(productCategories.articleNumber, product.articleNumber)
-              );
-
-            if (product.sizes) {
-              try {
-                const sizes = JSON.parse(product.sizes);
-                if (Array.isArray(sizes)) {
-                  await tx
-                    .delete(productSizes)
-                    .where(
-                      eq(productSizes.articleNumber, product.articleNumber)
-                    );
-                  for (const sizeObj of sizes) {
-                    const { size, stock } = sizeObj;
-                    if (size && stock != null) {
-                      await tx.insert(productSizes).values({
-                        articleNumber: product.articleNumber,
-                        size,
-                        stock: Number(stock),
-                      });
+              // Оновлюємо розміри, якщо є
+              if (product.sizes) {
+                try {
+                  const sizes = JSON.parse(product.sizes);
+                  if (Array.isArray(sizes)) {
+                    await tx
+                      .delete(productSizes)
+                      .where(
+                        eq(productSizes.articleNumber, product.articleNumber)
+                      );
+                    for (const sizeObj of sizes) {
+                      const { size, stock } = sizeObj;
+                      if (size && stock != null) {
+                        await tx.insert(productSizes).values({
+                          articleNumber: product.articleNumber,
+                          size,
+                          stock: Number(stock),
+                        });
+                      }
                     }
                   }
+                } catch (error) {
+                  log.errors.push(
+                    `Помилка парсингу розмірів для продукту ${product.articleNumber}: ${error.message}`
+                  );
                 }
-              } catch (error) {
-                log.errors.push(
-                  `Помилка парсингу розмірів для продукту ${product.articleNumber}: ${error.message}`
-                );
               }
+              log.updated++;
             }
-            log.updated++;
           } else {
+            // Вставляємо новий продукт
             await tx.insert(products).values({
               articleNumber: product.articleNumber,
-              brandId: brand[0].brandId,
+              brandId: brandRec[0].brandId,
               price: product.price,
               discount: product.discount ? Number(product.discount) : 0,
               name: product.name,
@@ -499,10 +536,11 @@ router.post(
 
             await tx.insert(productCategories).values({
               articleNumber: product.articleNumber,
-              categoryId: category[0].categoryId,
+              categoryId: categoryRec[0].categoryId,
               imageUrl: imageUrls[0] || null,
             });
 
+            // Додаємо розміри за необхідності
             if (product.sizes) {
               try {
                 const sizes = JSON.parse(product.sizes);
@@ -529,9 +567,10 @@ router.post(
         }
       });
 
-      await fs.unlink(file.path);
+      // Не потрібно видаляти нічого з диску, адже ми нічого не писали на диск.
       res.json({ message: "Дані успішно імпортовано", log });
     } catch (error) {
+      console.error("Помилка імпорту даних:", error);
       next(createError(500, "Помилка імпорту даних"));
     }
   }
