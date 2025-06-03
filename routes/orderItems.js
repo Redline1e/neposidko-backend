@@ -104,6 +104,7 @@ router.post("/order-items", optionalAuth, async (req, res, next) => {
     if (!articleNumber || !size || quantity === undefined)
       return next(createError(400, "Усі поля обов'язкові"));
 
+    // Перевіряємо запас для заданого розміру
     const productSize = await db
       .select()
       .from(productSizes)
@@ -116,11 +117,13 @@ router.post("/order-items", optionalAuth, async (req, res, next) => {
       .limit(1);
     if (!productSize.length)
       return next(createError(404, "Розмір не знайдено"));
-    if (productSize[0].stock < quantity)
-      return next(createError(400, "Недостатньо товару на складі"));
+
+    const availableStock = productSize[0].stock;
 
     if (req.user) {
       const { userId } = req.user;
+
+      // Знаходимо поточний кошик (замовлення зі статусом 1)
       let currentOrder = await fetchOne(
         db
           .select({ orderId: orders.orderId })
@@ -141,20 +144,77 @@ router.post("/order-items", optionalAuth, async (req, res, next) => {
           .where(eq(orders.orderId, currentOrder.orderId));
       }
 
-      const newOrderItem = await db
-        .insert(orderItems)
-        .values({
-          orderId: currentOrder.orderId,
-          articleNumber,
-          size,
-          quantity,
-        })
-        .returning();
-      res.status(201).json(newOrderItem[0]);
+      // Перевіряємо, чи є вже позиція з таким articleNumber та size
+      const existingItem = await db
+        .select()
+        .from(orderItems)
+        .where(
+          and(
+            eq(orderItems.orderId, currentOrder.orderId),
+            eq(orderItems.articleNumber, articleNumber),
+            eq(orderItems.size, size)
+          )
+        )
+        .limit(1);
+
+      if (existingItem.length > 0) {
+        // Оновлюємо кількість, якщо позиція вже є
+        const currentQuantity = existingItem[0].quantity;
+        const newQuantity = currentQuantity + quantity;
+
+        if (newQuantity > availableStock) {
+          return next(createError(400, "Недостатньо товару на складі"));
+        }
+
+        await db
+          .update(orderItems)
+          .set({ quantity: newQuantity })
+          .where(eq(orderItems.productOrderId, existingItem[0].productOrderId));
+        res.status(200).json({ message: "Кількість оновлено" });
+      } else {
+        // Додаємо нову позицію, якщо її немає
+        if (quantity > availableStock) {
+          return next(createError(400, "Недостатньо товару на складі"));
+        }
+
+        const newOrderItem = await db
+          .insert(orderItems)
+          .values({
+            orderId: currentOrder.orderId,
+            articleNumber,
+            size,
+            quantity,
+          })
+          .returning();
+        res.status(201).json(newOrderItem[0]);
+      }
     } else {
+      // Логіка для неавторизованих користувачів (сесія)
       req.session.cart = req.session.cart || [];
-      req.session.cart.push({ articleNumber, size, quantity });
-      res.status(201).json({ message: "Товар додано до кошика" });
+      const cartItemIndex = req.session.cart.findIndex(
+        (item) => item.articleNumber === articleNumber && item.size === size
+      );
+
+      if (cartItemIndex !== -1) {
+        // Оновлюємо кількість у сесії
+        const currentQuantity = req.session.cart[cartItemIndex].quantity;
+        const newQuantity = currentQuantity + quantity;
+
+        if (newQuantity > availableStock) {
+          return next(createError(400, "Недостатньо товару на складі"));
+        }
+
+        req.session.cart[cartItemIndex].quantity = newQuantity;
+        res.status(200).json({ message: "Кількість оновлено" });
+      } else {
+        // Додаємо нову позицію до сесії
+        if (quantity > availableStock) {
+          return next(createError(400, "Недостатньо товару на складі"));
+        }
+
+        req.session.cart.push({ articleNumber, size, quantity });
+        res.status(201).json({ message: "Товар додано до кошика" });
+      }
     }
   } catch (error) {
     next(createError(500, "Не вдалося додати товар до кошика"));
