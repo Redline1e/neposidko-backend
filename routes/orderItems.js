@@ -52,59 +52,28 @@ router.get("/order-items", optionalAuth, async (req, res, next) => {
           articleNumber: orderItems.articleNumber,
           size: orderItems.size,
           quantity: orderItems.quantity,
-          name: products.name,
-          imageUrls: products.imageUrls,
-          price: products.price,
-          discount: products.discount,
         })
         .from(orderItems)
         .innerJoin(orders, eq(orderItems.orderId, orders.orderId))
-        .leftJoin(
-          products,
-          eq(orderItems.articleNumber, products.articleNumber)
-        )
         .where(and(eq(orders.userId, userId), eq(orders.orderStatusId, 1)));
       return res.json(userOrderItems);
     } else {
       const sessionCart = req.session.cart || [];
-      const cartWithDetails = await Promise.all(
-        sessionCart.map(async (item) => {
-          const product = await fetchOne(
-            db
-              .select({
-                articleNumber: products.articleNumber,
-                name: products.name,
-                price: products.price,
-                discount: products.discount,
-                imageUrls: products.imageUrls,
-              })
-              .from(products)
-              .where(eq(products.articleNumber, item.articleNumber))
-              .limit(1)
-          );
-          return {
-            ...item,
-            name: product?.name || "Невідомий товар",
-            imageUrls: product?.imageUrls || [],
-            price: product?.price || 0,
-            discount: product?.discount || 0,
-          };
-        })
-      );
-      return res.json(cartWithDetails);
+      return res.json(sessionCart);
     }
   } catch (error) {
     next(createError(500, "Не вдалося отримати позиції замовлення"));
   }
 });
 
+// Додавання товару в кошик
 router.post("/order-items", optionalAuth, async (req, res, next) => {
   try {
     const { articleNumber, size, quantity } = req.body;
     if (!articleNumber || !size || quantity === undefined)
       return next(createError(400, "Усі поля обов'язкові"));
 
-    // Перевіряємо запас для заданого розміру
+    // Перевірка наявності розміру в базі даних
     const productSize = await db
       .select()
       .from(productSizes)
@@ -115,15 +84,20 @@ router.post("/order-items", optionalAuth, async (req, res, next) => {
         )
       )
       .limit(1);
-    if (!productSize.length)
-      return next(createError(404, "Розмір не знайдено"));
+
+    if (!productSize.length) {
+      return next(createError(404, "Вибраного розміру немає в наявності"));
+    }
 
     const availableStock = productSize[0].stock;
+    if (quantity > availableStock) {
+      return next(createError(400, "Недостатньо товару на складі"));
+    }
 
     if (req.user) {
       const { userId } = req.user;
 
-      // Знаходимо поточний кошик (замовлення зі статусом 1)
+      // Знаходимо або створюємо поточний кошик (замовлення зі статусом 1)
       let currentOrder = await fetchOne(
         db
           .select({ orderId: orders.orderId })
@@ -131,6 +105,7 @@ router.post("/order-items", optionalAuth, async (req, res, next) => {
           .where(and(eq(orders.userId, userId), eq(orders.orderStatusId, 1)))
           .limit(1)
       );
+
       if (!currentOrder) {
         const newOrder = await db
           .insert(orders)
@@ -144,7 +119,7 @@ router.post("/order-items", optionalAuth, async (req, res, next) => {
           .where(eq(orders.orderId, currentOrder.orderId));
       }
 
-      // Перевіряємо, чи є вже позиція з таким articleNumber та size
+      // Перевіряємо, чи є вже товар з таким articleNumber та size у кошику
       const existingItem = await db
         .select()
         .from(orderItems)
@@ -158,7 +133,7 @@ router.post("/order-items", optionalAuth, async (req, res, next) => {
         .limit(1);
 
       if (existingItem.length > 0) {
-        // Оновлюємо кількість, якщо позиція вже є
+        // Оновлюємо кількість існуючого запису
         const currentQuantity = existingItem[0].quantity;
         const newQuantity = currentQuantity + quantity;
 
@@ -170,13 +145,9 @@ router.post("/order-items", optionalAuth, async (req, res, next) => {
           .update(orderItems)
           .set({ quantity: newQuantity })
           .where(eq(orderItems.productOrderId, existingItem[0].productOrderId));
-        res.status(200).json({ message: "Кількість оновлено" });
+        res.status(200).json({ message: "Кількість товару оновлено" });
       } else {
-        // Додаємо нову позицію, якщо її немає
-        if (quantity > availableStock) {
-          return next(createError(400, "Недостатньо товару на складі"));
-        }
-
+        // Додаємо новий запис, якщо товару з таким розміром ще немає
         const newOrderItem = await db
           .insert(orderItems)
           .values({
@@ -205,13 +176,9 @@ router.post("/order-items", optionalAuth, async (req, res, next) => {
         }
 
         req.session.cart[cartItemIndex].quantity = newQuantity;
-        res.status(200).json({ message: "Кількість оновлено" });
+        res.status(200).json({ message: "Кількість товару оновлено" });
       } else {
-        // Додаємо нову позицію до сесії
-        if (quantity > availableStock) {
-          return next(createError(400, "Недостатньо товару на складі"));
-        }
-
+        // Додаємо новий товар до сесії
         req.session.cart.push({ articleNumber, size, quantity });
         res.status(201).json({ message: "Товар додано до кошика" });
       }
